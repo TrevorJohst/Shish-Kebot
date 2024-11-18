@@ -1,0 +1,46 @@
+<?xml version='1.0'?>
+<sdf xmlns:drake="http://drake.mit.edu" version="1.8">
+  <model name='skewer_4mm'>
+    <link name='skewer_4mm'>
+      <inertial>
+        <pose>-6.282453661891677e-21 4.7896840600136254e-21 0.1500000000000006 0 0 0</pose>
+        <mass>0.003675225322966653</mass>
+        <inertia>
+          <ixx>2.6818288883919956e-05</ixx>
+          <ixy>2.1644371087001514e-26</ixy>
+          <ixz>5.5211191465060645e-24</ixz>
+          <iyy>2.6818288883919956e-05</iyy>
+          <iyz>6.579454936950599e-24</iyz>
+          <izz>7.218848146249728e-09</izz>
+        </inertia>
+      </inertial>
+      <visual name='visual'>
+        <pose>0.0 0.0 0.0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>skewer_4mm.obj</uri>
+            <scale>0.01 0.01 0.01</scale>
+          </mesh>
+        </geometry>
+      </visual>
+      <collision name='collision'>
+        <pose>0.0 0.0 0.0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>skewer_4mm.vtk</uri>
+            <scale>0.01 0.01 0.01</scale>
+          </mesh>
+        </geometry>
+        <!-- The proximity properties immediately below enable the hydroelastic
+             contact model for this body. To use point contact instead, delete
+             or comment out the <drake:rigid_hydroelastic> element. -->
+        <drake:proximity_properties>
+          <drake:mu_dynamic>0.5</drake:mu_dynamic>
+          <drake:mu_static>0.5</drake:mu_static>
+          <drake:compliant_hydroelastic/>
+          <drake:hydroelastic_modulus>5.0e4</drake:hydroelastic_modulus>
+        </drake:proximity_properties>
+      </collision>
+    </link>
+  </model>
+</sdf>
