@@ -9,9 +9,7 @@ from pydrake.all import (
     Context,
     OutputPort,
     RollPitchYaw,
-    RotationMatrix,
-    RobotDiagram,
-    SimIiwaDriver
+    RotationMatrix
 )
 
 
@@ -28,7 +26,6 @@ class CartesianStiffnessController(LeafSystem):
         pose_desired
 
     Output Ports:
-        iiwa_position_cmd
         iiwa_torque_cmd
     """
 
@@ -72,9 +69,7 @@ class CartesianStiffnessController(LeafSystem):
         end effector spatial pose from Katib, Oussama 1987 (doi: 10.1109/JRA.1987.1087068)
         """
 
-        #######################################
         # Update context (why is this required)
-        #######################################
         q = self._q_in.Eval(context)
         self._plant.SetPositions(self._plant_context, self._iiwa, q)
 
