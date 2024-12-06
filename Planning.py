@@ -8,11 +8,9 @@ from pydrake.all import (
     InverseKinematics,
     PiecewisePolynomial,
     KinematicTrajectoryOptimization,
-    MinimumDistanceLowerBoundConstraint,
     PositionConstraint,
     BsplineTrajectory,
     Context,
-    OrientationConstraint,
     Solve,
 )
 
@@ -71,7 +69,7 @@ def CreateTrajectoryOptimized(X_WStart: RigidTransform,
     trajopt.AddPathPositionConstraint(start_constraint, 0)
 
     # Goal constraint
-    q_goal = SolveIK(X_WGoal, plant)
+    q_goal = SolveIK(X_WGoal, plant, pos_tol=tol, rot_tol=tol)
     trajopt.AddPathPositionConstraint(lb=q_goal-tols, ub=q_goal+tols, s=1)
 
     # Start and end with zero velocity
@@ -183,6 +181,18 @@ def SolveIK(pose: RigidTransform,
         theta_bound=rot_tol,
     )
 
-    result = Solve(prog)
-    assert result.is_success()
-    return result.GetSolution(q_variables)   
+    lower = plant.GetPositionLowerLimits()
+    lower[lower == -np.inf] = -np.pi
+    upper = plant.GetPositionUpperLimits()
+    upper[upper == np.inf] = np.pi
+
+    for _ in range(100):
+        q_rand = np.zeros(len(q_variables))
+        q_rand = np.random.uniform(low=lower, high=upper)
+        prog.SetInitialGuess(q_variables, q_rand)
+
+        result = Solve(prog)
+        if result.is_success():
+            return result.GetSolution(q_variables)
+        
+    raise ValueError

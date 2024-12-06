@@ -111,9 +111,7 @@ class CartesianStiffnessController(LeafSystem):
 
         # Measured pose in cartesian space
         X_G = self._plant.CalcRelativeTransform(self._plant_context, self._W, self._G)
-        x = np.vstack(
-            (RollPitchYaw(X_G.rotation()).vector(), X_G.translation())
-        ).reshape(-1, 1)
+        x = np.vstack((RollPitchYaw(X_G.rotation()).vector(), X_G.translation())).reshape(-1, 1)
         # 6x1         3x1                                    3x1
 
         # Measured SPATIAL velocity in cartesian space
@@ -125,22 +123,16 @@ class CartesianStiffnessController(LeafSystem):
         ######################
 
         # Joint space Coriolis and centrifugal biases (39)
-        btilde_r = self._plant.CalcBiasTerm(self._plant_context)[
-            self._joint_indices
-        ].reshape(-1, 1)
+        btilde_r = self._plant.CalcBiasTerm(self._plant_context)[self._joint_indices].reshape(-1, 1)
         # 7x1                  7x1
 
         # Joint space "mass matrix" (calculated directly internally?)
-        A = self._plant.CalcMassMatrix(self._plant_context)[
-            np.ix_(self._joint_indices, self._joint_indices)
-        ]
+        A = self._plant.CalcMassMatrix(self._plant_context)[np.ix_(self._joint_indices, self._joint_indices)]
         # 7x7           7x7
 
         # Joint space forces due to gravity
         # NOTE: This may have to be disabled due to issues with modeling torque-only control
-        g = A @ self._plant.CalcGravityGeneralizedForces(self._plant_context)[
-            self._joint_indices
-        ].reshape(-1, 1)
+        g = A @ self._plant.CalcGravityGeneralizedForces(self._plant_context)[self._joint_indices].reshape(-1, 1)
         # 7x1 7x7           7x1
 
         # Pseudo-"mass matrix" for cartesian space (51)
