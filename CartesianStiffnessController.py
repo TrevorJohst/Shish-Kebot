@@ -27,6 +27,7 @@ class CartesianStiffnessController(LeafSystem):
 
     Output Ports:
         iiwa_torque_cmd
+        iiwa_position_cmd
     """
 
     def __init__(self, 
@@ -63,6 +64,14 @@ class CartesianStiffnessController(LeafSystem):
 
         # Controller outputs 
         self.DeclareVectorOutputPort("iiwa_torque_cmd", 7, self.CalcTorqueOutput)
+        self.DeclareVectorOutputPort("iiwa_position_cmd", 7, self.CalcPositionOutput)
+
+    def CalcPositionOutput(self, context: Context, output: OutputPort) -> None:
+        """
+        Set output position to current position to allow pure torque control
+        """
+        q = self._q_in.Eval(context)
+        output.SetFromVector(q)
 
     def CalcTorqueOutput(self, context: Context, output: OutputPort) -> None:
         """
