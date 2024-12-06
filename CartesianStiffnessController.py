@@ -39,7 +39,7 @@ class CartesianStiffnessController(LeafSystem):
         self._plant_context = plant.CreateDefaultContext()
         self._iiwa = plant.GetModelInstanceByName(iiwa_name)
         wsg = plant.GetModelInstanceByName(end_effector_name)
-        self._G = plant.GetBodyByName(end_effector_name, wsg).body_frame()
+        self._G = plant.GetBodyByName("body", wsg).body_frame()
         self._W = plant.world_frame()
         self._joint_indices = plant.GetActuatedJointIndices(self._iiwa)
         self._joint_indices = [int(i) for i in self._joint_indices]
