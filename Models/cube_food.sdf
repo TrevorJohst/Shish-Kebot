@@ -35,11 +35,11 @@
              contact model for this body. To use point contact instead, delete
              or comment out the <drake:rigid_hydroelastic> element. -->
         <drake:proximity_properties>
-          <drake:hunt_crossley_dissipation>1.25</drake:hunt_crossley_dissipation>
+          <drake:hunt_crossley_dissipation>5</drake:hunt_crossley_dissipation>
           <drake:mu_dynamic>1.5</drake:mu_dynamic>
           <drake:mu_static>1.5</drake:mu_static>
           <drake:compliant_hydroelastic/>
-          <drake:hydroelastic_modulus>5.0e3</drake:hydroelastic_modulus>
+          <drake:hydroelastic_modulus>5.0e6</drake:hydroelastic_modulus>
         </drake:proximity_properties>
       </collision>
     </link>
