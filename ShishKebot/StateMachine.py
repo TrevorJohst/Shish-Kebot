@@ -10,8 +10,15 @@ from pydrake.all import (
     Context,
     PointCloud,
     RotationMatrix,
-    RollPitchYaw
+    RollPitchYaw,
+    MeshcatVisualizer,
+    MeshcatVisualizerParams,
+    DiagramBuilder,
+    Parser,
+    AddMultibodyPlantSceneGraph,
 )
+
+from manipulation.utils import ConfigureParser
 
 from ShishKebot.Perception import ProcessPointCloud
 from ShishKebot.Planning import AntipodalCandidateGrasp
@@ -37,8 +44,13 @@ class StateMachine(LeafSystem):
         end_effector1_name: str = "wsg1",
         iiwa2_name: str = "iiwa2", 
         end_effector2_name: str = "wsg2",
+        meshcat = None
         ) -> None:
         LeafSystem.__init__(self)
+
+        # Visualization setup
+        self.meshcat = meshcat
+        self.grasp_count = 0
 
         # iiwa1 setup
         self._plant1 = iiwa1_plant
@@ -59,14 +71,18 @@ class StateMachine(LeafSystem):
         self._world_context = world_plant.CreateDefaultContext()
 
         # Predefined state poses
-        self.X1_preskewer = RigidTransform(RotationMatrix(RollPitchYaw(180, 0, 0)), [0.5, 0.5, 0.5])
-        self.X2_preskewer = RigidTransform(RotationMatrix(RollPitchYaw(0, 0, 0)), [0.5, -0.5, 0.5])
-        self.X1_skewered = RigidTransform(RotationMatrix(RollPitchYaw(0, 0, 0)), [0.5, -0.5, 0.5])
-        self.X2_released = RigidTransform(RotationMatrix(RollPitchYaw(0, 0, 0)), [0.5, 0.5, 0.5])
+        self.X1_preskewer = RigidTransform(RotationMatrix(RollPitchYaw(180-45, 0, 0)), [-0.5, 0.5, 0.5])
+        self.X2_preskewer = RigidTransform(RotationMatrix(RollPitchYaw(0, 0, 0)), [-0.5, -0.1, 0.5])
+        self.X1_skewered = RigidTransform(RotationMatrix(RollPitchYaw(0, 0, 0)), [-0.5, -0.5, 0.5])
+        self.X2_released = RigidTransform(RotationMatrix(RollPitchYaw(0, 0, 0)), [-0.5, 0.5, 0.5])
 
         # State machine setup
-        self.state1 = State.START
-        self.state2 = State.START
+        self._state1_index = self.DeclareAbstractState(
+            AbstractValue.Make(State.START)
+        )
+        self._state2_index = self.DeclareAbstractState(
+            AbstractValue.Make(State.START)
+        )
         self.iiwa1_timer = self._plant_context1.get_time()
         self.iiwa2_timer = self._plant_context2.get_time()
 
@@ -74,7 +90,6 @@ class StateMachine(LeafSystem):
         self.X2_desired = RigidTransform(self.X2_preskewer)
         self.gripper_state = False
         self.num_cameras = num_cameras
-        self.X_perturbation = RigidTransform([0.0001, -0.0001, 0.0001])
 
         # State machine inputs
         self._q1_in = self.DeclareVectorInputPort("iiwa1_position_measured", 7)
@@ -111,26 +126,22 @@ class StateMachine(LeafSystem):
         np.set_printoptions(precision=4, floatmode="fixed", suppress=True)
 
     def CalcDesiredPose1(self, context, output):
-
-        match self.state1:
+        state = self._GetState(iiwa_num=1, context=context)
+        
+        match state:
             case State.START:
-                if self._AtPose(context, iiwa_num=1, X=self.X2_preskewer) and False:
+                if self._AtPose(context, iiwa_num=1, X=self.X2_preskewer):
                     # Go to next state
                     self._ChangeState(1, State.GET_TO_SKEWER_POSITION, context)
-
-                # Timeout after x seconds and retry
-                elif self._Timeout(2, iiwa_num=1, context=context):
-                    self.X1_preskewer = self.X_perturbation.multiply(self.X1_preskewer)
-                    self.X1_desired = self.X1_preskewer
 
             case State.GET_TO_SKEWER_POSITION:
                 # Maintain preskewer position until other iiwa is ready
                 if self._AtPose(context, iiwa_num=1, X=self.X1_preskewer) and \
-                   self._AtPose(context, iiwa_num=2, X=self.X2_preskewer) and False:
+                   self._AtPose(context, iiwa_num=2, X=self.X2_preskewer) and \
+                   self._GetState(iiwa_num=2, context=context) == State.GET_TO_SKEWER_POSITION:
                     # Go to skewering position
                     self.X1_desired = self.X1_skewered
                     self._ChangeState(1, State.SKEWER, context)
-
 
             case State.SKEWER:
                 # Move to skewer objects
@@ -144,10 +155,11 @@ class StateMachine(LeafSystem):
         output.set_value(self.X1_desired)
 
     def CalcDesiredPose2(self, context, output):
+        state = self._GetState(iiwa_num=2, context=context)
         
-        match self.state2:
+        match state:
             case State.START:
-                if self._AtPose(context, iiwa_num=2, X=self.X2_preskewer) and False:
+                if self._AtPose(context, iiwa_num=2, X=self.X2_preskewer):
                     # Take in point clouds and process
                     pcds = []
                     for i in range(self.num_cameras):
@@ -166,15 +178,13 @@ class StateMachine(LeafSystem):
                         raise RuntimeError("No grasp found")
                     
                     print(f"Grasp pose found")
+                    if self.meshcat is not None:
+                        self._drawGrasp(X_desired, f"grasp{self.grasp_count}")
+                        self.grasp_count += 1
                     
                     # Update goal and state
                     self.X2_desired = X_desired
                     self._ChangeState(2, State.PICK_UP_OBJECTS, context)
-
-                # Timeout after x seconds and retry
-                elif self._Timeout(2, iiwa_num=2, context=context):
-                    self.X2_preskewer = self.X_perturbation.multiply(self.X2_preskewer)
-                    self.X2_desired = self.X2_preskewer
 
             case State.PICK_UP_OBJECTS:
                 # Move to objects
@@ -182,9 +192,10 @@ class StateMachine(LeafSystem):
                     # Grasp objects (close gripper output)
                     self.gripper_state = 0.1
 
-                    # Move to next state
-                    self.X2_desired = self.X2_preskewer
-                    self._ChangeState(2, State.GET_TO_SKEWER_POSITION, context)
+                    # Move to next state after the gripper has some time to close
+                    if self._Timeout(2, iiwa_num=2, context=context):
+                        self.X2_desired = self.X2_preskewer
+                        self._ChangeState(2, State.GET_TO_SKEWER_POSITION, context)
 
                 # Timeout after x seconds and retry
                 elif self._Timeout(3, iiwa_num=2, context=context):
@@ -218,9 +229,9 @@ class StateMachine(LeafSystem):
             self._debug_count = 0
 
     def CalcControlMode(self, context, output):
-        # mode = context.get_abstract_state(int(self._mode_index)).get_value()
-
-        match self.state1:
+        state = self._GetState(iiwa_num=2, context=context)
+        
+        match state:
             case State.SKEWER:
                 output.set_value(InputPortIndex(2))  # Use stiffness control
             case _:
@@ -233,7 +244,7 @@ class StateMachine(LeafSystem):
                 context: Context,
                 iiwa_num: int,
                 X: RigidTransform,
-                tol: float = 0.12
+                tol: float = 0.1
                 ) -> bool:
         """
         Evaluates the current pose of the desired iiwa and determines if it is close to X
@@ -249,9 +260,9 @@ class StateMachine(LeafSystem):
                 self._G1
             )
 
-            dist = np.sum(self._PoseDifference(X_now, self.X1_desired))
+            dist = self._PoseDifference(X_now, X)
             self._debug(f"iiwa{iiwa_num} goal dist: {dist}")
-            return dist <= tol
+            return dist <= tol*10 # For some reason iiwa1 is less accurate than iiwa2
 
         elif iiwa_num == 2:
             # Update plant
@@ -264,7 +275,7 @@ class StateMachine(LeafSystem):
                 self._G2
             )
 
-            dist = np.sum(self._PoseDifference(X_now, self.X1_desired))
+            dist = self._PoseDifference(X_now, X)
             self._debug(f"iiwa{iiwa_num} goal dist: {dist}")
             return dist <= tol
 
@@ -293,6 +304,17 @@ class StateMachine(LeafSystem):
         else:
             return False
         
+    def _GetState(self,
+                  iiwa_num: int,
+                  context: Context
+                  ) -> State:
+        """
+        Gets the state of the desired iiwa
+        """
+        if   iiwa_num == 1: return context.get_abstract_state(int(self._state1_index)).get_value()
+        elif iiwa_num == 2: return context.get_abstract_state(int(self._state2_index)).get_value()
+        else:               raise RuntimeError("iiwa_num was invalid")
+        
     def _ChangeState(self,
                      iiwa_num: int,
                      state: State,
@@ -301,19 +323,20 @@ class StateMachine(LeafSystem):
         """
         Changes the state of the desired iiwa and updates its time
         """
+        cur_state = self._GetState(iiwa_num=iiwa_num, context=context)
         cur_time = context.get_time()
         if iiwa_num == 1:
-            print(f"iiwa{iiwa_num} {self.state1} -> {state}")
-            self.state1 = state
+            context.get_mutable_abstract_state(int(self._state1_index)).set_value(state)
             self.iiwa1_timer = cur_time
 
         elif iiwa_num == 2:
-            print(f"iiwa{iiwa_num} {self.state2} -> {state}")
-            self.state2 = state
+            context.get_mutable_abstract_state(int(self._state2_index)).set_value(state)
             self.iiwa2_timer = cur_time
 
         else:
             raise RuntimeError("iiwa_num was invalid")
+        
+        print(f"iiwa{iiwa_num} {cur_state} -> {state}")
         
     def _PoseDifference(self, X1: RigidTransform, X2: RigidTransform) -> np.ndarray:
         """
@@ -330,13 +353,29 @@ class StateMachine(LeafSystem):
 
         # Rotation error between x1 and x2 (small angle approximation)
         R_21 = R_2W @ R_1W.T
-        rot_error = vee(1 / 2 * (R_21 - R_21.T))
+        rot_error = np.linalg.norm(vee(1 / 2 * (R_21 - R_21.T)))
 
         # Position error between x1 and x2
-        pos_error = (X1.translation() - X2.translation()).reshape(-1, 1)
+        pos_error = np.linalg.norm(X1.translation() - X2.translation())
 
-        return np.vstack((rot_error, pos_error)).reshape(-1, 1)
-        
+        return rot_error + pos_error
+
+    def _drawGrasp(self, X_G: RigidTransform, prefix: str):    
+        builder = DiagramBuilder()
+        plant, scene_graph = AddMultibodyPlantSceneGraph(builder, time_step=0.001)
+        parser = Parser(plant)
+        ConfigureParser(parser)
+        parser.AddModelsFromUrl("package://manipulation/schunk_wsg_50_welded_fingers.sdf")
+        plant.WeldFrames(plant.world_frame(), plant.GetFrameByName("body"), X_G)
+        plant.Finalize()
+
+        params = MeshcatVisualizerParams()
+        params.prefix = prefix
+        meshcat_vis = MeshcatVisualizer.AddToBuilder(builder, scene_graph, self.meshcat, params)
+        diagram = builder.Build()
+        context = diagram.CreateDefaultContext()
+        diagram.ForcedPublish(context)
+
     def _debug(self, print_string):
         if self._debug_count == self._debug_rate:
             print(print_string)

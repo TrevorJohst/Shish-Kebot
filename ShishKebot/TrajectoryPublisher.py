@@ -15,7 +15,7 @@ from pydrake.all import (
     PiecewisePose
 )
 
-from ShishKebot.Planning import CreateTrajectoryOptimized
+from ShishKebot.Planning import CreateTrajectoryOptimized, SolveIK
 
 
 class TrajectoryPublisher(LeafSystem):
@@ -37,7 +37,7 @@ class TrajectoryPublisher(LeafSystem):
                  iiwa_name: str = "iiwa", 
                  end_effector_name: str = "wsg",
                  pose_speed: float = None,
-                 tol: float = 0.05
+                 tol: float = 0.01
                  ) -> None:
         LeafSystem.__init__(self)
         self._iiwa_name = iiwa_name
@@ -94,13 +94,13 @@ class TrajectoryPublisher(LeafSystem):
         X_goal = self._x_d_in.Eval(context)
         if not X_goal.IsExactlyEqualTo(cur_X_goal):
             # Update plant positions
-            self._plant.SetPositions(self._plant_context, self._iiwa, self._q_in.Eval(context))
+            q_now = self._q_in.Eval(context)
+            self._plant.SetPositions(self._plant_context, self._iiwa, q_now)
 
-            # Update trajectory and sampling
-            self._start_time = cur_time
+            # Update trajectory and sampling time (if successful)
             self._set_X_goal(context, X_goal)
-            self._GenerateTrajectory(context)
-            print(f"{self._iiwa_name} trajectory update")
+            if self._GenerateTrajectory(context):
+                self._start_time = cur_time
 
         dt = cur_time - self._start_time
 
@@ -114,7 +114,7 @@ class TrajectoryPublisher(LeafSystem):
         if self._debug_count > self._debug_rate:
             self._debug_count = 0
         
-    def _GenerateTrajectory(self, context: Context):
+    def _GenerateTrajectory(self, context: Context) -> bool:
         """
         Calculates the trajectory between the current position and the goal
         """
@@ -130,9 +130,16 @@ class TrajectoryPublisher(LeafSystem):
 
         # Optimize a joint space trajectory
         if self.joint_space:
-            self.trajectory = CreateTrajectoryOptimized(
+            trajectory = CreateTrajectoryOptimized(
                 X_WG, X_goal, self._plant, self._plant_context, tol=self.tol
             )
+            if trajectory is not None:
+                print(f"{self._iiwa_name} trajectory update")
+                self.trajectory = trajectory
+                return True
+            else:
+                print(f"{self._iiwa_name} failed to update trajectory")
+                return False
 
         # Create a linear pose trajectory
         else:
@@ -142,6 +149,8 @@ class TrajectoryPublisher(LeafSystem):
                 [0, travel_time], 
                 [X_WG, X_goal]
             )
+            print(f"{self._iiwa_name} trajectory update")
+            return True
 
     def _X_goal(self, context: Context):
         return context.get_abstract_state(int(self._X_goal_index)).get_value()
@@ -150,5 +159,5 @@ class TrajectoryPublisher(LeafSystem):
         context.get_mutable_abstract_state(int(self._X_goal_index)).set_value(X)
 
     def _debug(self, print_string):
-        if self._debug_count == self._debug_rate and self._iiwa_name == "iiwa2":
+        if self._debug_count == self._debug_rate:
             print(print_string)
