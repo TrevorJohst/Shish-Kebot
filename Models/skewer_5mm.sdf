@@ -19,7 +19,7 @@
         <geometry>
           <mesh>
             <uri>skewer_5mm.obj</uri>
-            <scale>0.02 0.02 0.02</scale>
+            <scale>0.015 0.015 0.015</scale>
           </mesh>
         </geometry>
       </visual>
@@ -28,7 +28,7 @@
         <geometry>
           <mesh>
             <uri>skewer_5mm.vtk</uri>
-            <scale>0.02 0.02 0.02</scale>
+            <scale>0.015 0.015 0.015</scale>
           </mesh>
         </geometry>
         <!-- The proximity properties immediately below enable the hydroelastic

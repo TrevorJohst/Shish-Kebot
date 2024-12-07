@@ -19,7 +19,7 @@
         <geometry>
           <mesh>
             <uri>cube_food.obj</uri>
-            <scale>0.0195 0.0195 0.0195</scale>
+            <scale>0.014625 0.014625 0.014625</scale>
           </mesh>
         </geometry>
       </visual>
@@ -28,7 +28,7 @@
         <geometry>
           <mesh>
             <uri>cube_food.vtk</uri>
-            <scale>0.0195 0.0195 0.0195</scale>
+            <scale>0.014625 0.014625 0.014625</scale>
           </mesh>
         </geometry>
         <!-- The proximity properties immediately below enable the hydroelastic
