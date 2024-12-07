@@ -36,9 +36,11 @@ class TrajectoryPublisher(LeafSystem):
                  plant, 
                  iiwa_name: str = "iiwa", 
                  end_effector_name: str = "wsg",
-                 pose_speed: float = None
+                 pose_speed: float = None,
+                 tol: float = 0.05
                  ) -> None:
         LeafSystem.__init__(self)
+        self._iiwa_name = iiwa_name
         self._plant = plant
         self._plant_context = plant.CreateDefaultContext()
         self._start_time = self._plant_context.get_time()
@@ -50,6 +52,7 @@ class TrajectoryPublisher(LeafSystem):
 
         self.joint_space = pose_speed is None
         self.pose_speed = pose_speed
+        self.tol = tol
 
         # System inputs
         self._x_d_in = self.DeclareAbstractInputPort(
@@ -72,24 +75,32 @@ class TrajectoryPublisher(LeafSystem):
                 self.SampleTrajectory
             )
 
-        self.X_goal = None
+        self._X_goal_index = self.DeclareAbstractState(
+            AbstractValue.Make(RigidTransform())
+        )
         self.trajectory = None
+
+        self._debug_count = 0
+        self._debug_rate = 3000
+        np.set_printoptions(precision=4, floatmode="fixed", suppress=True)
 
     def SampleTrajectory(self, context: Context, output: OutputPort):
         """
         Callback on output function, samples trajectory at current delta time.
         """
         cur_time = context.get_time()
+        cur_X_goal = self._X_goal(context)
 
         X_goal = self._x_d_in.Eval(context)
-        if not X_goal.IsExactlyEqualTo(self.X_goal):
+        if not X_goal.IsExactlyEqualTo(cur_X_goal):
             # Update plant positions
             self._plant.SetPositions(self._plant_context, self._iiwa, self._q_in.Eval(context))
 
             # Update trajectory and sampling
             self._start_time = cur_time
-            self.X_goal = X_goal
-            self._GenerateTrajectory()
+            self._set_X_goal(context, X_goal)
+            self._GenerateTrajectory(context)
+            print(f"{self._iiwa_name} trajectory update")
 
         dt = cur_time - self._start_time
 
@@ -98,8 +109,12 @@ class TrajectoryPublisher(LeafSystem):
             output.SetFromVector(self.trajectory.value(dt))
         else:
             output.set_value(self.trajectory.GetPose(dt))
+
+        self._debug_count += 1
+        if self._debug_count > self._debug_rate:
+            self._debug_count = 0
         
-    def _GenerateTrajectory(self):
+    def _GenerateTrajectory(self, context: Context):
         """
         Calculates the trajectory between the current position and the goal
         """
@@ -110,17 +125,30 @@ class TrajectoryPublisher(LeafSystem):
             self._G
         )
 
+        # Current goal pose
+        X_goal = self._X_goal(context)
+
         # Optimize a joint space trajectory
         if self.joint_space:
             self.trajectory = CreateTrajectoryOptimized(
-                X_WG, self.X_goal, self._plant, self._plant_context, tol=0.1
+                X_WG, X_goal, self._plant, self._plant_context, tol=self.tol
             )
 
         # Create a linear pose trajectory
         else:
             traj = PiecewisePose()
-            travel_time = (self.X_goal.translation() - X_WG.translation()) / self.pose_speed
+            travel_time = (X_goal.translation() - X_WG.translation()) / self.pose_speed
             self.trajectory = traj.MakeLinear(
                 [0, travel_time], 
-                [X_WG, self.X_goal]
+                [X_WG, X_goal]
             )
+
+    def _X_goal(self, context: Context):
+        return context.get_abstract_state(int(self._X_goal_index)).get_value()
+    
+    def _set_X_goal(self, context: Context, X: RigidTransform):
+        context.get_mutable_abstract_state(int(self._X_goal_index)).set_value(X)
+
+    def _debug(self, print_string):
+        if self._debug_count == self._debug_rate and self._iiwa_name == "iiwa2":
+            print(print_string)

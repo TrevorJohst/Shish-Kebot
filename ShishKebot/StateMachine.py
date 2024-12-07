@@ -59,10 +59,10 @@ class StateMachine(LeafSystem):
         self._world_context = world_plant.CreateDefaultContext()
 
         # Predefined state poses
-        self.X1_preskewer = RigidTransform(RigidTransform(RotationMatrix(RollPitchYaw(0, 0, 180)), [0.5, 0.5, 0.5]))
-        self.X2_preskewer = RigidTransform(RigidTransform(RotationMatrix(RollPitchYaw(0, 0, 0)), [0.5, -0.5, 0.5]))
-        self.X2_skewered = RigidTransform(RigidTransform(RotationMatrix(RollPitchYaw(0, 0, 0)), [0.5, -0.5, 0.5]))
-        self.X2_released = RigidTransform(RigidTransform(RotationMatrix(RollPitchYaw(0, 0, 0)), [0.5, 0.5, 0.5]))
+        self.X1_preskewer = RigidTransform(RotationMatrix(RollPitchYaw(180, 0, 0)), [0.5, 0.5, 0.5])
+        self.X2_preskewer = RigidTransform(RotationMatrix(RollPitchYaw(0, 0, 0)), [0.5, -0.5, 0.5])
+        self.X1_skewered = RigidTransform(RotationMatrix(RollPitchYaw(0, 0, 0)), [0.5, -0.5, 0.5])
+        self.X2_released = RigidTransform(RotationMatrix(RollPitchYaw(0, 0, 0)), [0.5, 0.5, 0.5])
 
         # State machine setup
         self.state1 = State.START
@@ -74,6 +74,7 @@ class StateMachine(LeafSystem):
         self.X2_desired = RigidTransform(self.X2_preskewer)
         self.gripper_state = False
         self.num_cameras = num_cameras
+        self.X_perturbation = RigidTransform([0.0001, -0.0001, 0.0001])
 
         # State machine inputs
         self._q1_in = self.DeclareVectorInputPort("iiwa1_position_measured", 7)
@@ -113,23 +114,29 @@ class StateMachine(LeafSystem):
 
         match self.state1:
             case State.START:
-                # Go to preskewer position 
-                self.X1_desired = self.X1_preskewer
-                self.state1 = State.GET_TO_SKEWER_POSITION
+                if self._AtPose(context, iiwa_num=1, X=self.X2_preskewer) and False:
+                    # Go to next state
+                    self._ChangeState(1, State.GET_TO_SKEWER_POSITION, context)
+
+                # Timeout after x seconds and retry
+                elif self._Timeout(2, iiwa_num=1, context=context):
+                    self.X1_preskewer = self.X_perturbation.multiply(self.X1_preskewer)
+                    self.X1_desired = self.X1_preskewer
 
             case State.GET_TO_SKEWER_POSITION:
                 # Maintain preskewer position until other iiwa is ready
                 if self._AtPose(context, iiwa_num=1, X=self.X1_preskewer) and \
-                   self._AtPose(context, iiwa_num=2, X=self.X2_preskewer):
+                   self._AtPose(context, iiwa_num=2, X=self.X2_preskewer) and False:
                     # Go to skewering position
                     self.X1_desired = self.X1_skewered
-                    self.state1 = State.SKEWER
+                    self._ChangeState(1, State.SKEWER, context)
+
 
             case State.SKEWER:
                 # Move to skewer objects
                 if self._AtPose(context, iiwa_num=1, X=self.X1_skewered):
                     # Go back to preskewer position
-                    self.state1 = State.START 
+                    self._ChangeState(1, State.START, context)
 
             case _:
                 raise RuntimeError("Unexpected state")
@@ -140,7 +147,7 @@ class StateMachine(LeafSystem):
         
         match self.state2:
             case State.START:
-                if self._AtPose(context, iiwa_num=2, X=self.X2_preskewer):
+                if self._AtPose(context, iiwa_num=2, X=self.X2_preskewer) and False:
                     # Take in point clouds and process
                     pcds = []
                     for i in range(self.num_cameras):
@@ -158,9 +165,16 @@ class StateMachine(LeafSystem):
                     if X_desired is None:
                         raise RuntimeError("No grasp found")
                     
+                    print(f"Grasp pose found")
+                    
                     # Update goal and state
                     self.X2_desired = X_desired
-                    self.state2 = State.PICK_UP_OBJECTS
+                    self._ChangeState(2, State.PICK_UP_OBJECTS, context)
+
+                # Timeout after x seconds and retry
+                elif self._Timeout(2, iiwa_num=2, context=context):
+                    self.X2_preskewer = self.X_perturbation.multiply(self.X2_preskewer)
+                    self.X2_desired = self.X2_preskewer
 
             case State.PICK_UP_OBJECTS:
                 # Move to objects
@@ -170,12 +184,12 @@ class StateMachine(LeafSystem):
 
                     # Move to next state
                     self.X2_desired = self.X2_preskewer
-                    self.state2 = State.GET_TO_SKEWER_POSITION
+                    self._ChangeState(2, State.GET_TO_SKEWER_POSITION, context)
 
                 # Timeout after x seconds and retry
                 elif self._Timeout(3, iiwa_num=2, context=context):
                     self.X2_desired = self.X2_preskewer
-                    self.state2 = State.START
+                    self._ChangeState(2, State.START, context)
 
             case State.GET_TO_SKEWER_POSITION:
                 # Move to skewer position and maintain
@@ -186,20 +200,18 @@ class StateMachine(LeafSystem):
 
                     # Move to next state
                     self.X2_desired = self.X2_released
-                    self.state2 = State.RELEASE
+                    self._ChangeState(2, State.RELEASE, context)
 
             case State.RELEASE:
                 # Move to release the object
                 if self._AtPose(context, iiwa_num=1, X=self.X2_released):
                     # Move to next state
-                    self.state2 = State.START
+                    self._ChangeState(2, State.START, context)
 
             case _:
                 raise RuntimeError("Unexpected state")
 
         output.set_value(self.X2_desired)
-
-        self._debug(self.state2)
 
         self._debug_count += 1
         if self._debug_count > self._debug_rate:
@@ -221,7 +233,7 @@ class StateMachine(LeafSystem):
                 context: Context,
                 iiwa_num: int,
                 X: RigidTransform,
-                tol: float = 0.5
+                tol: float = 0.12
                 ) -> bool:
         """
         Evaluates the current pose of the desired iiwa and determines if it is close to X
@@ -237,7 +249,9 @@ class StateMachine(LeafSystem):
                 self._G1
             )
 
-            return X.IsNearlyEqualTo(X_now, tol)
+            dist = np.sum(self._PoseDifference(X_now, self.X1_desired))
+            self._debug(f"iiwa{iiwa_num} goal dist: {dist}")
+            return dist <= tol
 
         elif iiwa_num == 2:
             # Update plant
@@ -250,8 +264,8 @@ class StateMachine(LeafSystem):
                 self._G2
             )
 
-            dist = np.linalg.norm(X.translation() - X_now.translation())
-            self._debug(f"Distance: {dist}")
+            dist = np.sum(self._PoseDifference(X_now, self.X1_desired))
+            self._debug(f"iiwa{iiwa_num} goal dist: {dist}")
             return dist <= tol
 
         else:
@@ -267,15 +281,61 @@ class StateMachine(LeafSystem):
         """
         cur_time = context.get_time()
         if iiwa_num == 1 and cur_time - self.iiwa1_timer > duration:
-            print(f"Iiwa{iiwa_num} Timeout")
+            print(f"iiwa{iiwa_num} Timeout")
             self.iiwa1_timer = cur_time
             return True
+        
         elif iiwa_num == 2 and cur_time - self.iiwa2_timer > duration:
-            print(f"Iiwa{iiwa_num} Timeout")
+            print(f"iiwa{iiwa_num} Timeout")
             self.iiwa2_timer = cur_time
             return True
+        
         else:
             return False
+        
+    def _ChangeState(self,
+                     iiwa_num: int,
+                     state: State,
+                     context: Context
+                     ) -> None:
+        """
+        Changes the state of the desired iiwa and updates its time
+        """
+        cur_time = context.get_time()
+        if iiwa_num == 1:
+            print(f"iiwa{iiwa_num} {self.state1} -> {state}")
+            self.state1 = state
+            self.iiwa1_timer = cur_time
+
+        elif iiwa_num == 2:
+            print(f"iiwa{iiwa_num} {self.state2} -> {state}")
+            self.state2 = state
+            self.iiwa2_timer = cur_time
+
+        else:
+            raise RuntimeError("iiwa_num was invalid")
+        
+    def _PoseDifference(self, X1: RigidTransform, X2: RigidTransform) -> np.ndarray:
+        """
+        Computes the 6x1 vector representing the pose error from X1 to X2.
+        """
+
+        def vee(S: np.ndarray) -> np.ndarray:
+            """vee operator for a 3x3 skew-symmetric matrix"""
+            return np.array([-S[1, 2], S[0, 2], -S[0, 1]]).reshape(-1, 1)
+
+        # Extract rotations from RPY representations
+        R_1W = X1.rotation().matrix()
+        R_2W = X2.rotation().matrix()
+
+        # Rotation error between x1 and x2 (small angle approximation)
+        R_21 = R_2W @ R_1W.T
+        rot_error = vee(1 / 2 * (R_21 - R_21.T))
+
+        # Position error between x1 and x2
+        pos_error = (X1.translation() - X2.translation()).reshape(-1, 1)
+
+        return np.vstack((rot_error, pos_error)).reshape(-1, 1)
         
     def _debug(self, print_string):
         if self._debug_count == self._debug_rate:

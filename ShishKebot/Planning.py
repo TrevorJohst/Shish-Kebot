@@ -11,6 +11,7 @@ from pydrake.all import (
     KinematicTrajectoryOptimization,
     PositionConstraint,
     BsplineTrajectory,
+    MinimumDistanceLowerBoundConstraint,
     Context,
     PointCloud,
     DiagramBuilder,
@@ -284,10 +285,8 @@ def CreateTrajectoryOptimized(X_WStart: RigidTransform,
     trajopt = KinematicTrajectoryOptimization(plant.num_positions(), 10)
     prog = trajopt.get_mutable_prog()
 
-    # Initial guess
-    q_guess = np.tile(q0.reshape((7, 1)), (1, trajopt.num_control_points()))
-    q_guess[0, :] = np.linspace(0, -np.pi / 2, trajopt.num_control_points())
-    path_guess = BsplineTrajectory(trajopt.basis(), q_guess)
+    # Initial guess (solved without orientation constraint on end)
+    path_guess = CreateTrajectoryOptimizedRelaxed(X_WStart, X_WGoal, plant, plant_context, max_time, tol=0.05)
     trajopt.SetInitialGuess(path_guess)
 
     # Default constraints
@@ -308,10 +307,71 @@ def CreateTrajectoryOptimized(X_WStart: RigidTransform,
         plant_context,
     )
     trajopt.AddPathPositionConstraint(start_constraint, 0)
+    prog.AddQuadraticErrorCost(np.eye(num_q), q0, trajopt.control_points()[:, 0])
 
     # Goal constraint
-    # q_goal = SolveIK(X_WGoal, plant, pos_tol=tol, rot_tol=tol)
-    # trajopt.AddPathPositionConstraint(lb=q_goal-tols, ub=q_goal+tols, s=1)
+    q_goal = SolveIK(X_WGoal, plant, pos_tol=tol, rot_tol=tol, max_iter=1000)
+    trajopt.AddPathPositionConstraint(lb=q_goal-tols, ub=q_goal+tols, s=1)
+    prog.AddQuadraticErrorCost(np.eye(num_q), q0, trajopt.control_points()[:, -1])
+
+    # Start and end with zero velocity
+    trajopt.AddPathVelocityConstraint(np.zeros((num_q, 1)), np.zeros((num_q, 1)), 0)
+    trajopt.AddPathVelocityConstraint(np.zeros((num_q, 1)), np.zeros((num_q, 1)), 1)
+
+    result = Solve(prog)
+    assert result.is_success()
+
+    return trajopt.ReconstructTrajectory(result)
+
+def CreateTrajectoryOptimizedRelaxed(X_WStart: RigidTransform,
+                                     X_WGoal: RigidTransform,
+                                     plant: MultibodyPlant,
+                                     plant_context: Context,
+                                     max_time: float = 50.0,
+                                     tol: float = 0.01
+                                     ) -> BsplineTrajectory:
+    """
+    Creates a trajectory between two end effector poses using trajectory optimization. This version
+    is more relaxed and only emposes position constraints on the start and end points.
+    Args:
+        X_WStart (RigidTransform): Pose of the end effector at the start
+        X_WGoal (RigidTransform): Pose of the end effector at the goal
+        plant (MultibodyPlant): Plant containing the iiwa
+        plant_context (Context): Context of the plant from root, used for collision avoidance
+        max_time (float): Maximum time to accept for a trajectory
+        tol (float): Tolerance for aligning with start and end pose
+    Returns:
+        q_traj (BsplineTrajectory): The trajectory object generated
+    """
+    num_q = plant.num_positions()
+    pos_tols = np.ones(3) * tol
+    q0 = plant.GetPositions(plant_context)
+    gripper_frame = plant.GetFrameByName("body")
+
+    trajopt = KinematicTrajectoryOptimization(plant.num_positions(), 10)
+    prog = trajopt.get_mutable_prog()
+
+    # Default constraints
+    trajopt.AddDurationCost(1.0)
+    trajopt.AddPathLengthCost(1.0)
+    trajopt.AddPositionBounds(plant.GetPositionLowerLimits(), plant.GetPositionUpperLimits())
+    trajopt.AddVelocityBounds(plant.GetVelocityLowerLimits(), plant.GetVelocityUpperLimits())
+    trajopt.AddDurationConstraint(0.5, max_time)
+
+    # Start constraint
+    start_constraint = PositionConstraint(
+        plant,
+        plant.world_frame(),
+        X_WStart.translation() - pos_tols,
+        X_WStart.translation() + pos_tols,
+        gripper_frame,
+        [0, 0.1, 0],
+        plant_context,
+    )
+    trajopt.AddPathPositionConstraint(start_constraint, 0)
+    prog.AddQuadraticErrorCost(np.eye(num_q), q0, trajopt.control_points()[:, 0])
+
+    # Goal constraint
     goal_constraint = PositionConstraint(
         plant,
         plant.world_frame(),
@@ -322,18 +382,11 @@ def CreateTrajectoryOptimized(X_WStart: RigidTransform,
         plant_context,
     )
     trajopt.AddPathPositionConstraint(goal_constraint, 1)
+    prog.AddQuadraticErrorCost(np.eye(num_q), q0, trajopt.control_points()[:, -1])
 
     # Start and end with zero velocity
     trajopt.AddPathVelocityConstraint(np.zeros((num_q, 1)), np.zeros((num_q, 1)), 0)
     trajopt.AddPathVelocityConstraint(np.zeros((num_q, 1)), np.zeros((num_q, 1)), 1)
-
-    # # Collision constraints
-    # collision_constraint = MinimumDistanceLowerBoundConstraint(
-    #     plant, 0.001, plant_context, None, 0.01
-    # )
-    # evaluate_at_s = np.linspace(0, 1, 50)
-    # for s in evaluate_at_s:
-    #     trajopt.AddPathPositionConstraint(collision_constraint, s)
 
     result = Solve(prog)
     assert result.is_success()
@@ -378,6 +431,7 @@ def SolveIK(pose: RigidTransform,
             plant_context: Context = None,
             pos_tol: float = 0.01,
             rot_tol: float = 0.01,
+            max_iter: int = 100,
             initial: np.ndarray = None
             ) -> np.ndarray:
     """
@@ -388,6 +442,7 @@ def SolveIK(pose: RigidTransform,
         plant_context (Context): Context of the plant from root, avoids collisions if passed in
         pos_tol (float): Tolerance of positions (in m)
         rot_tol (float): Tolerance of orientations (in rad)
+        max_iter (int): Maximum iterations to try to solve
         initial (np.ndarray): Initial guess for the pose of the robot
     Returns:
         q (np.ndarray): The joint positions at the queried pose
@@ -444,7 +499,7 @@ def SolveIK(pose: RigidTransform,
     upper = plant.GetPositionUpperLimits()
     upper[upper == np.inf] = np.pi
 
-    for _ in range(100):
+    for _ in range(max_iter):
         q_rand = np.zeros(len(q_variables))
         q_rand = np.random.uniform(low=lower, high=upper)
         prog.SetInitialGuess(q_variables, q_rand)
