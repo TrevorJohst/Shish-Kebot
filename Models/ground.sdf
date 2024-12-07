@@ -3,7 +3,15 @@
   <model name="box">
     <link name="base">
       <inertial>
-        <mass>0.1</mass>
+        <mass>18.70</mass>
+        <inertia>
+          <ixx>0.79</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>0.53</iyy>
+          <iyz>0</iyz>
+          <izz>1.2</izz>
+        </inertia>
       </inertial>
       <visual name="visual">
         <pose>0 0 -0.5 0 0 0</pose>
@@ -12,6 +20,10 @@
             <size>3.6576 3.6576 1</size>
           </box>
         </geometry>
+        <material>
+          <ambient>0.5 0.25 0 0.5</ambient>
+          <diffuse>0.1 0.1 0 0.4</diffuse>
+        </material>
       </visual>
       <collision name="collision">
         <pose>0 0 -0.5 0 0 0</pose>
@@ -20,9 +32,13 @@
             <size>3.6576 3.6576 1</size>
           </box>
         </geometry>
+        <drake:proximity_properties>
+          <drake:rigid_hydroelastic/>
+          <drake:hydroelastic_modulus>1.0e6</drake:hydroelastic_modulus>
+        </drake:proximity_properties>
       </collision>
     </link>
-    <link name="wall">
+    <!-- <link name="wall">
       <inertial>
         <mass>0.1</mass>
       </inertial>
@@ -125,6 +141,6 @@
         <parent>base</parent>
         <child>wall4</child>
         <pose>0 0 0 0 0 0</pose>
-    </joint>
+    </joint> -->
   </model>
 </sdf>
