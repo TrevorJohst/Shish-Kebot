@@ -10,17 +10,17 @@ from pydrake.all import (
     OutputPort,
     RollPitchYaw,
     RotationMatrix,
+    AbstractValue,
+    RigidTransform
 )
 
 
 class CartesianStiffnessController(LeafSystem):
     """
     Wrapper system for commanding cartesian stiffness poses to an iiwa.
-    Note that the desired position is a 6x1 vector, where the first three
-    components are the roll-pitch-yaw orientation and the last 3 components are
-    the translational position.
+    The desired pose input port is abstract valued on a RigidTransform.
 
-    Input:
+    Input Ports:
         iiwa_position_measured
         iiwa_velocity_measured
         pose_desired
@@ -61,7 +61,9 @@ class CartesianStiffnessController(LeafSystem):
         # Controller inputs
         self._q_in = self.DeclareVectorInputPort("iiwa_position_measured", 7)
         self._qdot_in = self.DeclareVectorInputPort("iiwa_velocity_measured", 7)
-        self._x_d_in = self.DeclareVectorInputPort("pose_desired", 6)
+        self._x_d_in = self.DeclareAbstractInputPort(
+            "pose_desired", AbstractValue.Make(RigidTransform())
+        )
 
         # Controller outputs
         self.DeclareVectorOutputPort("iiwa_torque_cmd", 7, self.CalcTorqueOutput)
@@ -95,7 +97,8 @@ class CartesianStiffnessController(LeafSystem):
 
         # External inputs
         qdot = self._qdot_in.Eval(context).reshape(-1, 1)  # 7x1
-        x_d = self._x_d_in.Eval(context).reshape(-1, 1)  # 6x1
+        X_d = self._x_d_in.Eval(context)                   # RigidTransform
+        x_d = np.vstack((RollPitchYaw(X_d.rotation()).vector(), X_d.translation())).reshape(-1, 1) # 6x1
         xdot_d = np.zeros((6, 1))  # 6x1 CURRENTLY DISABLED
 
         # Jacobian calculation for current configuration
