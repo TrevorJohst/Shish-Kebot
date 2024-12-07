@@ -14,6 +14,8 @@ from pydrake.all import (
     Context,
     PointCloud,
     DiagramBuilder,
+    Fields,
+    BaseField,
     Parser,
     ModelInstanceIndex,
     AddMultibodyPlantSceneGraph,
@@ -59,8 +61,8 @@ def RemovePlanarSurface(point_cloud: PointCloud,
     best_model = np.ones(4)
     for _ in range(max_iterations):
         # Randomly select 3 points
-        selected = np.rng.choice(points.shape[1], size=3, replace=False)
-        selected_points = point_cloud[:, selected]
+        selected = np.random.choice(points.shape[1], size=3, replace=False)
+        selected_points = points[:, selected]
 
         # Fit a plane to the points
         plane = fitPlane(selected_points).reshape(4, 1)
@@ -79,11 +81,13 @@ def RemovePlanarSurface(point_cloud: PointCloud,
     # Remove the plane from the point cloud
     plane = best_model.reshape(4, 1)
     distances = (np.abs(plane.T @ stacked_points) / np.linalg.norm(plane[:3])).flatten()
-    point_cloud.xyz = points[:, distances >= tolerance]
+    cropped_points = points[:, distances >= tolerance]
+    cropped_pcd = PointCloud(cropped_points.shape[1])
+    cropped_pcd.mutable_xyzs()[:] = cropped_points
 
-    return point_cloud
+    return cropped_pcd
 
-def ProcessPointCloud(cameras: list[ModelInstanceIndex],
+def ProcessPointCloud(pcds: list[PointCloud],
                       plant: MultibodyPlant,
                       plant_context: Context,
                       crop_lower: tuple[float, float, float] = None,
@@ -93,9 +97,9 @@ def ProcessPointCloud(cameras: list[ModelInstanceIndex],
     """
     Extracts point clouds from a number of cameras and does basic processing on them.
     Args:
-        cameras ([ModelInstanceIndex]): The model instances of each camera in the plant
+        pcds ([PointCloud]): The list of unprocessed point clouds
         plant (MultibodyPlant): Plant instance containing the cameras
-        plant_context (Context): Plant context to evaluate camera observations at
+        plant_context (Context): Plant context to evaluate camera positions at
         crop_lower ((float, float, float)): Lower bounds of the crop region (x, y, z)
         crop_upper ((float, float, float)): Upper bounds of the crop region (x, y, z)
         remove_plane (bool): If True, attemps to remove a planar surface from each cloud
@@ -104,14 +108,16 @@ def ProcessPointCloud(cameras: list[ModelInstanceIndex],
         raise RuntimeError("Must pass in both crop_upper and crop_lower if one is passed.")
 
     pcd = []
-    for i, camera in enumerate(cameras):
-        # Get the pointcloud for this camera
-        # TODO: Check if this works, state output might not exist for a camera
-        cloud = plant.get_state_output_port(camera).Eval(plant_context)
+    for i, cloud in enumerate(pcds):
+        valid_cloud = cloud.xyzs()[:, np.all(np.isfinite(cloud.xyzs()), axis=0)]
+        if valid_cloud.shape[1] == 0: raise RuntimeError("Empty point cloud")
+
+        pcd.append(PointCloud(valid_cloud.shape[1], fields=Fields(BaseField.kXYZs | BaseField.kNormals)))
+        pcd[i].mutable_xyzs()[:] = valid_cloud
 
         # Crop to region of interest
         if crop_lower:
-            pcd.append(cloud.Crop(lower_xyz=crop_lower, upper_xyz=crop_upper))
+            pcd[i] = cloud.Crop(lower_xyz=crop_lower, upper_xyz=crop_upper)
 
         # Remove a planar surface
         if remove_plane:
@@ -121,6 +127,7 @@ def ProcessPointCloud(cameras: list[ModelInstanceIndex],
         pcd[i].EstimateNormals(radius=0.1, num_closest=30)
 
         # Direct normals from observation direction
+        camera = plant.GetModelInstanceByName(f"camera{i}")
         body = plant.GetBodyByName("base", camera)
         X_C = plant.EvalBodyPoseInWorld(plant_context, body)
         pcd[i].FlipNormalsTowardPoint(X_C.translation())

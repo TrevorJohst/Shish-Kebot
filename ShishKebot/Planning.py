@@ -189,6 +189,7 @@ def CandidateGrasp(pcd: PointCloud,
     ball_radius = 0.002
     
     # Try to grasp random points on the cloud until one succeeds
+    best = None
     for _ in range(max_iter):
         rand_index = np.random.randint(0, pcd.xyzs().shape[1])
 
@@ -203,8 +204,10 @@ def CandidateGrasp(pcd: PointCloud,
 
         if notEmpty(pcd, X_WG):
             return X_WG
+        
+        if not best: best = X_WG
     
-    return None
+    return best
 
 def CreateTrajectoryOptimized(X_WStart: RigidTransform,
                               X_WGoal: RigidTransform,
