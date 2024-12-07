@@ -12,49 +12,115 @@ from pydrake.all import (
     RollPitchYaw,
     RotationMatrix,
     RigidTransform,
+    PiecewisePose
 )
 
 from ShishKebot.Planning import CreateTrajectoryOptimized
 
 
 class TrajectoryPublisher(LeafSystem):
-    def __init__(
-        self, plant, iiwa_name: str = ("iiwa",), end_effector_name: str = "wsg"
-    ):
-        LeafSystem.__init__(self)
-        self.plant = plant
-        self.plant_context = plant.CreateDefaultContext()
-        self.start_time = self.plant_context.get_time()
-        self.iiwa = plant.GetModelInstanceByName(iiwa_name)
-        self.wsg = plant.GetModelInstanceByName(end_effector_name)
-        self.input = self.DeclareVectorInputPort("target_position", 6)
-        self.q_in = self.DeclareVectorInputPort("iiwa_position_measured", 7)
-        self.DeclareVectorOutputPort("iiwa_position_cmd", 7, self.SampleTrajectory)
+    """
+    Calculates and commands a trajectory either in joint space
+    or end effector pose space. Joint space trajectories are optimized,
+    while pose space trajectories are simple linear interpolations.
 
-        self.goal = None
+    Input Ports:
+        iiwa_position_measured
+        pose_desired
+
+    Output Ports:
+        iiwa_position_cmd OR iiwa_pose_cmd
+    """
+
+    def __init__(self, 
+                 plant, 
+                 iiwa_name: str = "iiwa", 
+                 end_effector_name: str = "wsg",
+                 pose_speed: float = None
+                 ) -> None:
+        LeafSystem.__init__(self)
+        self._plant = plant
+        self._plant_context = plant.CreateDefaultContext()
+        self._start_time = self._plant_context.get_time()
+
+        self._iiwa = plant.GetModelInstanceByName(iiwa_name)
+        wsg = plant.GetModelInstanceByName(end_effector_name)
+        self._G = plant.GetBodyByName("body", wsg).body_frame()
+        self._W = plant.world_frame()
+
+        self.joint_space = pose_speed is None
+        self.pose_speed = pose_speed
+
+        # System inputs
+        self._x_d_in = self.DeclareAbstractInputPort(
+            "pose_desired", 
+            AbstractValue.Make(RigidTransform())
+        )
+        self._q_in = self.DeclareVectorInputPort("iiwa_position_measured", 7)
+
+        # System outputs
+        if self.joint_space:
+            self.DeclareVectorOutputPort(
+                "iiwa_position_cmd", 
+                7, 
+                self.SampleTrajectory
+            )
+        else:
+            self.DeclareAbstractOutputPort(
+                "iiwa_pose_cmd", 
+                lambda: AbstractValue.Make(RigidTransform()), 
+                self.SampleTrajectory
+            )
+
+        self.X_goal = None
         self.trajectory = None
 
-    def generateTrajectory(self):
-
-        current = self.plant.CalcRelativeTransform(
-            self.plant_context,
-            self.plant.world_frame(),
-            self.plant.GetBodyByName("body", self.wsg).body_frame(),
-        )
-        self.trajectory = CreateTrajectoryOptimized(
-            current, self.goal, self.plant, self.plant_context, tol=0.1
-        )
-
     def SampleTrajectory(self, context: Context, output: OutputPort):
+        """
+        Callback on output function, samples trajectory at current delta time.
+        """
         cur_time = context.get_time()
-        goal = self.input.Eval(context)
-        if goal is not self.goal:
-            self.goal = goal
-            self.plant.SetPositions(
-                self.plant_context, self.iiwa, self.q_in.Eval(context)
+
+        X_goal = self._x_d_in.Eval(context)
+        if X_goal is not self.X_goal:
+            # Update plant positions
+            self._plant.SetPositions(self._plant_context, self._iiwa, self._q_in.Eval(context))
+
+            # Update trajectory and sampling
+            self._start_time = cur_time
+            self.X_goal = X_goal
+            self._GenerateTrajectory()
+
+        dt = cur_time - self._start_time
+
+        # Sample the trajectory appropriately
+        if self.joint_space:
+            output.SetFromVector(self.trajectory.value(dt))
+        else:
+            output.set_value(self.trajectory.GetPose(dt))
+        
+    def _GenerateTrajectory(self):
+        """
+        Calculates the trajectory between the current position and the goal
+        """
+        # Current end effector pose
+        X_WG = self._plant.CalcRelativeTransform(
+            self._plant_context,
+            self._W,
+            self._G
+        )
+
+        # Optimize a joint space trajectory
+        if self.joint_space:
+            self.trajectory = CreateTrajectoryOptimized(
+                X_WG, self.X_goal, self._plant, self._plant_context, tol=0.1
             )
-            cur_time = context.get_time()
-            self.generateTrajectory()
-        dt = cur_time - self.start_time
-        q = self.trajectory.value(dt)
-        output.SetFromVector(q)
+
+        # Create a linear pose trajectory
+        else:
+            traj = PiecewisePose()
+            travel_time = (self.X_goal.translation() - X_WG.translation()) / self.pose_speed
+            self.trajectory = traj.MakeLinear(
+                [0, travel_time], 
+                [X_WG, self.X_goal]
+            )

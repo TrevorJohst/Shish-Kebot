@@ -21,9 +21,9 @@ from pydrake.all import (
 
 from manipulation.utils import ConfigureParser
 
-def CandidateGrasp(pcd: PointCloud,
-                   max_iter: int = 20
-                   ) -> RigidTransform:
+def DarbouxCandidateGrasp(pcd: PointCloud,
+                          max_iter: int = 20
+                          ) -> RigidTransform:
     """
     Compute and returns a candidate grasp pose on a pointcloud
     Args:
@@ -285,7 +285,7 @@ def CreateTrajectoryOptimized(X_WStart: RigidTransform,
 def CreateTrajectoryKeyframe(pose_list: list[RigidTransform], 
                              times: list[float],
                              plant: MultibodyPlant,
-                             plant_context: Context,
+                             plant_context: Context = None,
                              pos_tol: float = 0.01,
                              rot_tol: float = 0.01
                              ) -> PiecewisePolynomial:
@@ -305,8 +305,11 @@ def CreateTrajectoryKeyframe(pose_list: list[RigidTransform],
     """
     q_knots = []
 
-    for pose in pose_list:
-        q_knots.append(SolveIK(pose, plant, plant_context, pos_tol, rot_tol))
+    for i, pose in enumerate(pose_list):
+        if i == 0:
+            q_knots.append(SolveIK(pose, plant, plant_context, pos_tol, rot_tol))
+        else:
+            q_knots.append(SolveIK(pose, plant, plant_context, pos_tol, rot_tol, q_knots[-1]))
 
     q_knots = np.array(q_knots)
 
@@ -316,7 +319,8 @@ def SolveIK(pose: RigidTransform,
             plant: MultibodyPlant,
             plant_context: Context = None,
             pos_tol: float = 0.01,
-            rot_tol: float = 0.01
+            rot_tol: float = 0.01,
+            initial: np.ndarray = None
             ) -> np.ndarray:
     """
     Solves for the joint positions at a given end effector pose.
@@ -326,6 +330,7 @@ def SolveIK(pose: RigidTransform,
         plant_context (Context): Context of the plant from root, avoids collisions if passed in
         pos_tol (float): Tolerance of positions (in m)
         rot_tol (float): Tolerance of orientations (in rad)
+        initial (np.ndarray): Initial guess for the pose of the robot
     Returns:
         q (np.ndarray): The joint positions at the queried pose
     """
@@ -369,6 +374,12 @@ def SolveIK(pose: RigidTransform,
         R_BbarB=RotationMatrix(),
         theta_bound=rot_tol,
     )
+
+    if initial is not None:
+        prog.SetInitialGuess(q_variables, initial)
+        result = Solve(prog)
+        if result.is_success():
+            return result.GetSolution(q_variables)
 
     lower = plant.GetPositionLowerLimits()
     lower[lower == -np.inf] = -np.pi
