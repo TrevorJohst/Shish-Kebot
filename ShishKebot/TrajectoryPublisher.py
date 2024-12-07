@@ -82,7 +82,7 @@ class TrajectoryPublisher(LeafSystem):
         cur_time = context.get_time()
 
         X_goal = self._x_d_in.Eval(context)
-        if X_goal is not self.X_goal:
+        if not X_goal.IsExactlyEqualTo(self.X_goal):
             # Update plant positions
             self._plant.SetPositions(self._plant_context, self._iiwa, self._q_in.Eval(context))
 

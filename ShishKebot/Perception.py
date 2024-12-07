@@ -1,5 +1,4 @@
 import numpy as np
-from scipy.spatial import KDTree
 
 # Drake dependencies
 from pydrake.all import (
@@ -20,8 +19,18 @@ from pydrake.all import (
     ModelInstanceIndex,
     AddMultibodyPlantSceneGraph,
     Solve,
-    Concatenate
+    Concatenate,
+    MakeRenderEngineVtk,
+    RenderEngineVtkParams,
+    DepthRenderCamera,
+    RenderCameraCore,
+    CameraInfo,
+    ClippingRange,
+    DepthRange,
+    RgbdSensor,
+    DepthImageToPointCloud
 )
+from manipulation.systems import ExtractPose
 
 def RemovePlanarSurface(point_cloud: PointCloud, 
                         tolerance: float = 1e-3, 
@@ -139,3 +148,89 @@ def ProcessPointCloud(pcds: list[PointCloud],
     down_sampled_pcd = merged_pcd.VoxelizedDownSample(voxel_size=0.005)
 
     return down_sampled_pcd
+
+def AddRgbdSensors(
+    builder,
+    plant,
+    scene_graph,
+    model_instance_prefix="camera",
+    depth_camera=None,
+    renderer=None,
+):
+    """
+    Adds a RgbdSensor to the first body in the plant for every model instance
+    with a name starting with model_instance_prefix.  If depth_camera is None,
+    then a default camera info will be used.  If renderer is None, then we will
+    assume the name 'my_renderer', and create a VTK renderer if a renderer of
+    that name doesn't exist.
+    """
+    if not renderer:
+        renderer = "my_renderer"
+
+    if not scene_graph.HasRenderer(renderer):
+        scene_graph.AddRenderer(renderer, MakeRenderEngineVtk(RenderEngineVtkParams()))
+
+    if not depth_camera:
+        depth_camera = DepthRenderCamera(
+            RenderCameraCore(
+                renderer,
+                CameraInfo(width=640, height=480, fov_y=np.pi / 4.0),
+                ClippingRange(near=0.1, far=10.0),
+                RigidTransform(),
+            ),
+            DepthRange(0.1, 10.0),
+        )
+
+    pcd_sensors = []
+    for index in range(plant.num_model_instances()):
+        model_instance_index = ModelInstanceIndex(index)
+        model_name = plant.GetModelInstanceName(model_instance_index)
+
+        if model_name.startswith(model_instance_prefix):
+            body_index = plant.GetBodyIndices(model_instance_index)[0]
+            rgbd = builder.AddSystem(
+                RgbdSensor(
+                    parent_id=plant.GetBodyFrameIdOrThrow(body_index),
+                    X_PB=RigidTransform(),
+                    depth_camera=depth_camera,
+                    show_window=False,
+                )
+            )
+            rgbd.set_name(model_name)
+
+            builder.Connect(
+                scene_graph.get_query_output_port(),
+                rgbd.query_object_input_port(),
+            )
+
+            # Add a system to convert the camera output into a point cloud
+            to_point_cloud = builder.AddSystem(
+                DepthImageToPointCloud(
+                    camera_info=rgbd.default_depth_render_camera()
+                    .core()
+                    .intrinsics(),
+                    fields=BaseField.kXYZs | BaseField.kRGBs,
+                )
+            )
+            builder.Connect(
+                rgbd.depth_image_32F_output_port(),
+                to_point_cloud.depth_image_input_port(),
+            )
+            builder.Connect(
+                rgbd.color_image_output_port(),
+                to_point_cloud.color_image_input_port(),
+            )
+
+            camera_pose = builder.AddSystem(ExtractPose(body_index))
+            builder.Connect(
+                plant.get_body_poses_output_port(),
+                camera_pose.get_input_port(),
+            )
+            builder.Connect(
+                camera_pose.get_output_port(),
+                to_point_cloud.GetInputPort("camera_pose"),
+            )
+
+            pcd_sensors.append(to_point_cloud)
+
+    return pcd_sensors

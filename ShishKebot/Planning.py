@@ -15,11 +15,58 @@ from pydrake.all import (
     PointCloud,
     DiagramBuilder,
     Parser,
+    LoadModelDirectivesFromString,
+    ProcessModelDirectives,
     AddMultibodyPlantSceneGraph,
     Solve,
 )
 
 from manipulation.utils import ConfigureParser
+from manipulation.clutter import GenerateAntipodalGraspCandidate
+
+def AntipodalCandidateGrasp(pcd: PointCloud,
+                            max_iter: int = 20
+                            ) -> RigidTransform:
+    """
+    Compute and returns a candidate grasp pose on a pointcloud
+    Args:
+        pcd (PointCloud): Pointcloud of the object
+        max_iter (int): Maximum iterations to allow before aborting search
+    Returns:
+        X_WG (RigidTransform): Pose of the candidate grasp, None if not found
+    """
+
+    # Create a toy scene with just a wsg for collision testing
+    wsg_directive = f"""
+    directives:
+    - add_model:
+        name: wsg
+        file: package://manipulation/schunk_wsg_50_welded_fingers.sdf
+    """
+    builder = DiagramBuilder()
+    plant, _ = AddMultibodyPlantSceneGraph(builder, time_step=1e-3)
+    directives = LoadModelDirectivesFromString(wsg_directive)
+    parser = Parser(plant)
+    ConfigureParser(parser)
+    ProcessModelDirectives(directives, plant, parser)
+    plant.Finalize()
+    diagram = builder.Build()
+    context = diagram.CreateDefaultContext()
+
+    # Loop and generate grasps, select lowest cost
+    # NOTE: Is lowest cost best?
+    min_cost = np.inf
+    best_X_G = None
+    for _ in range(max_iter):
+        cost, X_G = GenerateAntipodalGraspCandidate(
+            diagram, context, pcd, rng=np.random.default_rng()
+        )
+
+        if np.isfinite(cost) and cost < min_cost:
+            min_cost = cost
+            best_X_G = X_G
+
+    return best_X_G
 
 def DarbouxCandidateGrasp(pcd: PointCloud,
                           max_iter: int = 20
@@ -230,6 +277,7 @@ def CreateTrajectoryOptimized(X_WStart: RigidTransform,
     """
     num_q = plant.num_positions()
     tols = np.ones(num_q) * tol
+    pos_tols = np.ones(3) * tol
     q0 = plant.GetPositions(plant_context)
     gripper_frame = plant.GetFrameByName("body")
 
@@ -253,8 +301,8 @@ def CreateTrajectoryOptimized(X_WStart: RigidTransform,
     start_constraint = PositionConstraint(
         plant,
         plant.world_frame(),
-        X_WStart.translation(),
-        X_WStart.translation(),
+        X_WStart.translation() - pos_tols,
+        X_WStart.translation() + pos_tols,
         gripper_frame,
         [0, 0.1, 0],
         plant_context,
@@ -262,8 +310,18 @@ def CreateTrajectoryOptimized(X_WStart: RigidTransform,
     trajopt.AddPathPositionConstraint(start_constraint, 0)
 
     # Goal constraint
-    q_goal = SolveIK(X_WGoal, plant, pos_tol=tol, rot_tol=tol)
-    trajopt.AddPathPositionConstraint(lb=q_goal-tols, ub=q_goal+tols, s=1)
+    # q_goal = SolveIK(X_WGoal, plant, pos_tol=tol, rot_tol=tol)
+    # trajopt.AddPathPositionConstraint(lb=q_goal-tols, ub=q_goal+tols, s=1)
+    goal_constraint = PositionConstraint(
+        plant,
+        plant.world_frame(),
+        X_WGoal.translation() - pos_tols,
+        X_WGoal.translation() + pos_tols,
+        gripper_frame,
+        [0, 0.1, 0],
+        plant_context,
+    )
+    trajopt.AddPathPositionConstraint(goal_constraint, 1)
 
     # Start and end with zero velocity
     trajopt.AddPathVelocityConstraint(np.zeros((num_q, 1)), np.zeros((num_q, 1)), 0)
