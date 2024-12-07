@@ -128,6 +128,9 @@ def ProcessPointCloud(pcds: list[PointCloud],
         if crop_lower:
             pcd[i] = cloud.Crop(lower_xyz=crop_lower, upper_xyz=crop_upper)
 
+            # Skip if this leaves no points
+            if pcd[i].xyzs().size == 0: continue
+
         # Remove a planar surface
         if remove_plane:
             pcd[i] = RemovePlanarSurface(pcd[i])

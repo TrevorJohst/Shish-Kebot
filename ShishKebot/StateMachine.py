@@ -25,10 +25,11 @@ from ShishKebot.Planning import AntipodalCandidateGrasp
 
 class State(Enum):
     START = 1
-    PICK_UP_OBJECTS = 2         # diff ik controller to pick up objects
-    GET_TO_SKEWER_POSITION = 3  # moves robots to a set positions aligned to skewer
-    SKEWER = 4                  # skewering action with stiffness controller
-    RELEASE = 5                 # release the food on the skewer
+    PREGRASP = 2                # above block
+    GRASP = 3                   # diff ik controller to pick up objects
+    GET_TO_SKEWER_POSITION = 4  # moves robots to a set positions aligned to skewer
+    SKEWER = 5                  # skewering action with stiffness controller
+    RELEASE = 6                 # release the food on the skewer
 
 class StateMachine(LeafSystem):
     """
@@ -88,7 +89,13 @@ class StateMachine(LeafSystem):
 
         self.X1_desired = RigidTransform(self.X1_preskewer)
         self.X2_desired = RigidTransform(self.X2_preskewer)
-        self.gripper_state = False
+        self.gripper_open = 0.3
+        self.gripper_closed = -0.05
+        self._gripper_state_index = self.DeclareAbstractState(
+            AbstractValue.Make(self.gripper_open)
+        )
+        self.X_PregraspGrasp = RigidTransform([0, 0, 0.1])
+        self.X_Grasp = RigidTransform()
         self.num_cameras = num_cameras
 
         # State machine inputs
@@ -168,6 +175,8 @@ class StateMachine(LeafSystem):
                         pcds, 
                         self._world_plant, 
                         self._world_context,
+                        crop_lower=(-2, -2, 0),
+                        crop_upper=(-0.5, 0.2, 0.2),
                         remove_plane=True
                     )
 
@@ -179,21 +188,33 @@ class StateMachine(LeafSystem):
                     
                     print(f"Grasp pose found")
                     if self.meshcat is not None:
-                        self._drawGrasp(X_desired, f"grasp{self.grasp_count}")
+                        self._drawGrasp(self.X_PregraspGrasp @ X_desired, f"grasp{self.grasp_count}")
                         self.grasp_count += 1
                     
                     # Update goal and state
-                    self.X2_desired = X_desired
-                    self._ChangeState(2, State.PICK_UP_OBJECTS, context)
+                    self.X_Grasp = X_desired
+                    self.X2_desired = self.X_PregraspGrasp @ self.X_Grasp
+                    self._ChangeState(2, State.PREGRASP, context)
 
-            case State.PICK_UP_OBJECTS:
+            case State.PREGRASP:
+                # Move to pose above object
+                if self._AtPose(context, iiwa_num=2, X=self.X2_desired):
+                    self.X2_desired = self.X_Grasp
+                    self._ChangeState(2, State.GRASP, context)
+
+                # Timeout after x seconds and retry
+                elif self._Timeout(3, iiwa_num=2, context=context):
+                    self.X2_desired = self.X2_preskewer
+                    self._ChangeState(2, State.START, context)
+
+            case State.GRASP:
                 # Move to objects
                 if self._AtPose(context, iiwa_num=2, X=self.X2_desired):
                     # Grasp objects (close gripper output)
-                    self.gripper_state = 0.1
+                    self._ChangeGripper(context, self.gripper_closed)
 
                     # Move to next state after the gripper has some time to close
-                    if self._Timeout(2, iiwa_num=2, context=context):
+                    if self._Timeout(4, iiwa_num=2, context=context):
                         self.X2_desired = self.X2_preskewer
                         self._ChangeState(2, State.GET_TO_SKEWER_POSITION, context)
 
@@ -207,7 +228,7 @@ class StateMachine(LeafSystem):
                 if self._AtPose(context, iiwa_num=2, X=self.X2_preskewer) and \
                    self._AtPose(context, iiwa_num=1, X=self.X1_skewered):
                     # Release object (open gripper output)
-                    self.gripper_state = 1.5
+                    self._ChangeGripper(context, self.gripper_open)
 
                     # Move to next state
                     self.X2_desired = self.X2_released
@@ -238,7 +259,9 @@ class StateMachine(LeafSystem):
                 output.set_value(InputPortIndex(1))  # Use diff IK
     
     def CloseGripper(self, context, output):
-        output.set_value(self.gripper_state)
+        gripper_state = context.get_abstract_state(int(self._gripper_state_index)).get_value()
+
+        output.SetFromVector(np.array([gripper_state]))
 
     def _AtPose(self, 
                 context: Context,
@@ -337,6 +360,9 @@ class StateMachine(LeafSystem):
             raise RuntimeError("iiwa_num was invalid")
         
         print(f"iiwa{iiwa_num} {cur_state} -> {state}")
+
+    def _ChangeGripper(self, context, value):
+        context.get_mutable_abstract_state(int(self._gripper_state_index)).set_value(value)
         
     def _PoseDifference(self, X1: RigidTransform, X2: RigidTransform) -> np.ndarray:
         """
