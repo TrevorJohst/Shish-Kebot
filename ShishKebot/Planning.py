@@ -1,5 +1,6 @@
 import numpy as np
 from scipy.spatial import KDTree
+import ShishKebot.Seed
 
 # Drake dependencies
 from pydrake.all import (
@@ -17,15 +18,21 @@ from pydrake.all import (
     PointCloud,
     DiagramBuilder,
     Parser,
+    BsplineBasis,
     LoadModelDirectivesFromString,
     ProcessModelDirectives,
     AddMultibodyPlantSceneGraph,
     Solve,
 )
-
+from manipulation.exercises.trajectories.rrt_planner.robot import (
+    ConfigurationSpace,
+    Range,
+)
+from manipulation.exercises.trajectories.rrt_planner.rrt_planning import Problem
 from manipulation.utils import ConfigureParser
 from manipulation.clutter import GenerateAntipodalGraspCandidate
 import os
+from random import random
 
 def AntipodalCandidateGrasp(pcd: PointCloud,
                             max_iter: int = 20
@@ -265,12 +272,228 @@ def DarbouxCandidateGrasp(pcd: PointCloud,
     
     return best
 
+def CreateTrajectoryRRT(X_WStart: RigidTransform,
+                        X_WGoal: RigidTransform,
+                        plant: MultibodyPlant,
+                        plant_context: Context,
+                        max_iter: int = 100,
+                        prob_sample_q_goal: float = 0.05
+                        ) -> PiecewisePolynomial:
+    """
+    Creates a trajectory between two end effector poses using joint space RRT
+    Args:
+        X_WStart (RigidTransform): Pose of the end effector at the start
+        X_WGoal (RigidTransform): Pose of the end effector at the goal
+        plant (MultibodyPlant): Plant containing the iiwa
+        plant_context (Context): Context of the plant from root, used for collision avoidance
+        max_iter (int): Maximum number of iterations to run RRT for
+        prob_sample_q_goal (float): Probability of sampling the goal
+    Returns:
+        q_traj (BsplineTrajectory): The trajectory object generated
+    """
+    class RRT_tools:
+        class RRT:
+            """
+            RRT Tree.
+            """
+            class TreeNode:
+                def __init__(self, value, parent=None):
+                    self.value = value  # tuple of floats representing a configuration
+                    self.parent = parent  # another TreeNode
+                    self.children = []  # list of TreeNodes
+
+
+            def __init__(self, root: TreeNode, cspace: ConfigurationSpace):
+                self.root = root  # root TreeNode
+                self.cspace = cspace  # robot.ConfigurationSpace
+                self.size = 1  # int length of path
+                self.max_recursion = 1000  # int length of longest possible path
+
+            def add_configuration(self, parent_node, child_value):
+                child_node = self.TreeNode(child_value, parent_node)
+                parent_node.children.append(child_node)
+                self.size += 1
+                return child_node
+
+            # Brute force nearest, handles general distance functions
+            def nearest(self, configuration):
+                """
+                Finds the nearest node by distance to configuration in the
+                    configuration space.
+
+                Args:
+                    configuration: tuple of floats representing a configuration of a
+                        robot
+
+                Returns:
+                    closest: TreeNode. the closest node in the configuration space
+                        to configuration
+                    distance: float. distance from configuration to closest
+                """
+                assert self.cspace.valid_configuration(configuration)
+
+                def recur(node, depth=0):
+                    closest, distance = node, self.cspace.distance(node.value, configuration)
+                    if depth < self.max_recursion:
+                        for child in node.children:
+                            (child_closest, child_distance) = recur(child, depth + 1)
+                            if child_distance < distance:
+                                closest = child_closest
+                                child_distance = child_distance
+                    return closest, distance
+
+                return recur(self.root)[0]
+    
+        def __init__(self, problem):
+            # rrt is a tree
+            self.rrt_tree = self.RRT(self.RRT.TreeNode(problem.start), problem.cspace)
+            problem.rrts = [self.rrt_tree]
+            self.problem = problem
+
+        def find_nearest_node_in_RRT_graph(self, q_sample):
+            nearest_node = self.rrt_tree.nearest(q_sample)
+            return nearest_node
+
+        def sample_node_in_configuration_space(self):
+            q_sample = self.problem.cspace.sample()
+            return q_sample
+
+        def calc_intermediate_qs_wo_collision(self, q_start, q_end):
+            """create more samples by linear interpolation from q_start
+            to q_end. Return all samples that are not in collision
+
+            Example interpolated path:
+            q_start, qa, qb, (Obstacle), qc , q_end
+            returns >>> q_start, qa, qb
+            """
+            return self.problem.safe_path(q_start, q_end)
+
+        def grow_rrt_tree(self, parent_node, q_sample):
+            """
+            add q_sample to the rrt tree as a child of the parent node
+            returns the rrt tree node generated from q_sample
+            """
+            child_node = self.rrt_tree.add_configuration(parent_node, q_sample)
+            return child_node
+
+        def node_reaches_goal(self, node):
+            return np.all(node.value == self.problem.goal)
+
+        def backup_path_from_node(self, node):
+            path = [node.value]
+            while node.parent is not None:
+                node = node.parent
+                path.append(node.value)
+            path.reverse()
+            return path
+
+    class IiwaProblem(Problem):
+        def __init__(
+            self,
+            q_start: np.array,
+            q_goal: np.array
+        ):
+            # Construct configuration space for IIWA.
+            nq = 7
+            joint_limits = np.zeros((nq, 2))
+            for i in range(nq):
+                joint = plant.GetJointByName("iiwa_joint_%i" % (i + 1))
+                joint_limits[i, 0] = joint.position_lower_limits()
+                joint_limits[i, 1] = joint.position_upper_limits()
+
+            range_list = []
+            for joint_limit in joint_limits:
+                range_list.append(Range(joint_limit[0], joint_limit[1]))
+
+            def l2_distance(q: tuple):
+                sum = 0
+                for q_i in q:
+                    sum += q_i**2
+                return np.sqrt(sum)
+
+            max_steps = nq * [np.pi / 180 * 2]  # three degrees
+            cspace_iiwa = ConfigurationSpace(range_list, l2_distance, max_steps)
+
+            # Call base class constructor.
+            Problem.__init__(
+                self,
+                x=10,  # not used.
+                y=10,  # not used.
+                robot=None,  # not used.
+                obstacles=None,  # not used.
+                start=tuple(q_start),
+                goal=tuple(q_goal),
+                cspace=cspace_iiwa,
+            )
+
+        def collide(self, configuration):
+            return False
+            # q = np.array(configuration)
+            # return self.collision_checker.ExistsCollision(
+            #     q,
+            #     self.gripper_setpoint,
+            #     self.left_door_angle,
+            #     self.right_door_angle,
+            # )
+
+    q0 = plant.GetPositions(plant_context)
+
+    q_start = SolveIK(X_WStart, plant, initial=q0, max_iter=1000)
+    q_goal = SolveIK(X_WGoal, plant, initial=q0, max_iter=1000)
+    
+    if q_start is None or q_goal is None: raise RuntimeError("RRT IK Failed")
+
+    iiwa_problem = IiwaProblem(
+        q_start=q_start,
+        q_goal=q_goal
+    )
+
+    rrt_tools = RRT_tools(iiwa_problem)
+    
+    # for k = 1 to max_interation:
+    for k in range(max_iter):
+        # q_sample ← Generate Random Configuration
+        q_sample = rrt_tools.sample_node_in_configuration_space()
+
+        # random number ← random()
+        rand = random()
+
+        # if random_number < prob_sample_goal:
+        if rand < prob_sample_q_goal:
+            # q_sample ← q_goal
+            q_sample = q_goal
+
+        # n_near ← Find the nearest node in the tree(q_sample)
+        n_near = rrt_tools.find_nearest_node_in_RRT_graph(q_sample)
+
+        # (q_1, q_2, ... q_N) ← Find intermediate q's from n_near to q_sample
+        q_path = rrt_tools.calc_intermediate_qs_wo_collision(n_near.value, q_sample)
+        
+        # iteratively add the new nodes to the tree to form a new edge
+        # last_node ← n_near
+        last_node = n_near
+
+        # for n = 1 to N:
+        for q in q_path:
+            # last_node ← Grow RRT tree (parent_node, q_{n}) 
+            last_node = rrt_tools.grow_rrt_tree(last_node, q)
+        
+        # if last node reaches the goal:
+        if rrt_tools.node_reaches_goal(last_node):
+            # path ← backup the path recursively
+            path = rrt_tools.backup_path_from_node(last_node)
+            break
+        
+    path = np.array(path)
+    times = np.arange(0, path.shape[0], 1)
+    return PiecewisePolynomial.CubicShapePreserving(times, path[:, 0:7].T)
+
 def CreateTrajectoryOptimized(X_WStart: RigidTransform,
                               X_WGoal: RigidTransform,
                               plant: MultibodyPlant,
                               plant_context: Context,
-                              max_time: float = 50.0,
-                              tol: float = 0.01,
+                              max_time: float = 4.0,
+                              tol: float = 0.07,
                               max_iter: int = 100
                               ) -> BsplineTrajectory:
     """
@@ -300,11 +523,11 @@ def CreateTrajectoryOptimized(X_WStart: RigidTransform,
         trajopt.SetInitialGuess(path_guess)
 
         # Default constraints
-        trajopt.AddDurationCost(0.5)
-        trajopt.AddPathLengthCost(1.0)
+        trajopt.AddDurationCost(2.0)
+        # trajopt.AddPathLengthCost(2.0)
         trajopt.AddPositionBounds(plant.GetPositionLowerLimits(), plant.GetPositionUpperLimits())
         trajopt.AddVelocityBounds(plant.GetVelocityLowerLimits(), plant.GetVelocityUpperLimits())
-        trajopt.AddDurationConstraint(0.5, max_time)
+        trajopt.AddDurationConstraint(0, max_time)
 
         # Start constraint
         start_constraint = PositionConstraint(
@@ -320,9 +543,29 @@ def CreateTrajectoryOptimized(X_WStart: RigidTransform,
         prog.AddQuadraticErrorCost(np.eye(num_q), q0, trajopt.control_points()[:, 0])
 
         # Goal constraint
-        q_goal = SolveIK(X_WGoal, plant, pos_tol=tol, rot_tol=tol, max_iter=1000)
+        q_goal = SolveIK(X_WGoal, plant, pos_tol=tol, rot_tol=tol, max_iter=1000, initial=q0)
         if q_goal is None: break
         trajopt.AddPathPositionConstraint(lb=q_goal, ub=q_goal, s=1)
+        # goal_constraint = PositionConstraint(
+        #     plant,
+        #     plant.world_frame(),
+        #     X_WGoal.translation(),
+        #     X_WGoal.translation(),
+        #     gripper_frame,
+        #     [0, 0.1, 0],
+        #     plant_context,
+        # )
+        # trajopt.AddPathPositionConstraint(goal_constraint, 1)
+        # goal_orientation_constraint = OrientationConstraint(
+        #     plant,
+        #     plant.world_frame(),
+        #     X_WGoal.rotation(),
+        #     gripper_frame,
+        #     RotationMatrix(),
+        #     tol,
+        #     plant_context
+        # )
+        # trajopt.AddPathPositionConstraint(goal_orientation_constraint, 1)
         prog.AddQuadraticErrorCost(np.eye(num_q), q0, trajopt.control_points()[:, -1])
 
         # Start and end with zero velocity
@@ -368,7 +611,7 @@ def CreateTrajectoryOptimizedRelaxed(X_WStart: RigidTransform,
     trajopt.AddPathLengthCost(1.0)
     trajopt.AddPositionBounds(plant.GetPositionLowerLimits(), plant.GetPositionUpperLimits())
     trajopt.AddVelocityBounds(plant.GetVelocityLowerLimits(), plant.GetVelocityUpperLimits())
-    trajopt.AddDurationConstraint(0.5, max_time)
+    trajopt.AddDurationConstraint(0, max_time)
 
     # Start constraint
     start_constraint = PositionConstraint(

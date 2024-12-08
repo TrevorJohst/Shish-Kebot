@@ -72,10 +72,10 @@ class StateMachine(LeafSystem):
         self._world_context = world_plant.CreateDefaultContext()
 
         # Predefined state poses
-        self.X1_preskewer = RigidTransform(RotationMatrix(RollPitchYaw(180-45, 0, 0)), [-0.5, 0.5, 0.5])
-        self.X2_preskewer = RigidTransform(RotationMatrix(RollPitchYaw(0, 0, 0)), [-0.5, -0.1, 0.5])
-        self.X1_skewered = RigidTransform(RotationMatrix(RollPitchYaw(0, 0, 0)), [-0.5, -0.5, 0.5])
-        self.X2_released = RigidTransform(RotationMatrix(RollPitchYaw(0, 0, 0)), [-0.5, 0.5, 0.5])
+        self.X1_preskewer = RigidTransform(RotationMatrix(RollPitchYaw(180-45, 0, 0)), [0.5, 0.5, 0.5])
+        self.X2_preskewer = RigidTransform(RotationMatrix(RollPitchYaw(0, 0, 0)), [0.5, -0.1, 0.5])
+        self.X1_skewered = RigidTransform(RotationMatrix(RollPitchYaw(0, 0, 0)), [0.5, -0.5, 0.5])
+        self.X2_released = RigidTransform(RotationMatrix(RollPitchYaw(0, 0, 0)), [0.5, 0.5, 0.5])
 
         # State machine setup
         self._state1_index = self.DeclareAbstractState(
@@ -163,9 +163,11 @@ class StateMachine(LeafSystem):
 
     def CalcDesiredPose2(self, context, output):
         state = self._GetState(iiwa_num=2, context=context)
+        gripper_state = context.get_abstract_state(int(self._gripper_state_index)).get_value()
         
         match state:
             case State.START:
+                # Go to initial position
                 if self._AtPose(context, iiwa_num=2, X=self.X2_preskewer):
                     # Take in point clouds and process
                     pcds = []
@@ -176,7 +178,7 @@ class StateMachine(LeafSystem):
                         self._world_plant, 
                         self._world_context,
                         crop_lower=(-2, -2, 0),
-                        crop_upper=(-0.5, 0.2, 0.2),
+                        crop_upper=(-0.2, 0.1, 0.2),
                         remove_plane=True
                     )
 
@@ -210,13 +212,15 @@ class StateMachine(LeafSystem):
             case State.GRASP:
                 # Move to objects
                 if self._AtPose(context, iiwa_num=2, X=self.X2_desired):
-                    # Grasp objects (close gripper output)
-                    self._ChangeGripper(context, self.gripper_closed)
 
                     # Move to next state after the gripper has some time to close
-                    if self._Timeout(4, iiwa_num=2, context=context):
-                        self.X2_desired = self.X2_preskewer
-                        self._ChangeState(2, State.GET_TO_SKEWER_POSITION, context)
+                    if self._Timeout(1, iiwa_num=2, context=context):
+                        # Close gripper if is open, and reset timeout
+                        if gripper_state == self.gripper_open:
+                            self._ChangeGripper(context, self.gripper_closed)
+                        else:
+                            self.X2_desired = self.X2_preskewer
+                            self._ChangeState(2, State.GET_TO_SKEWER_POSITION, context)
 
                 # Timeout after x seconds and retry
                 elif self._Timeout(3, iiwa_num=2, context=context):

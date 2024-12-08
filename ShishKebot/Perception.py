@@ -1,4 +1,5 @@
 import numpy as np
+import ShishKebot.Seed
 
 # Drake dependencies
 from pydrake.all import (

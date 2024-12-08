@@ -15,7 +15,7 @@ from pydrake.all import (
     PiecewisePose
 )
 
-from ShishKebot.Planning import CreateTrajectoryOptimized, SolveIK
+from ShishKebot.Planning import CreateTrajectoryOptimized, CreateTrajectoryRRT, SolveIK
 
 
 class TrajectoryPublisher(LeafSystem):
@@ -52,6 +52,8 @@ class TrajectoryPublisher(LeafSystem):
 
         self.joint_space = pose_speed is None
         self.pose_speed = pose_speed
+        self.traj_idx = 0
+        self.sample_speed = 0.01
         self.tol = tol
 
         # System inputs
@@ -101,12 +103,14 @@ class TrajectoryPublisher(LeafSystem):
             self._set_X_goal(context, X_goal)
             if self._GenerateTrajectory(context):
                 self._start_time = cur_time
+                self.traj_idx = 0
 
         dt = cur_time - self._start_time
 
         # Sample the trajectory appropriately
         if self.joint_space:
-            output.SetFromVector(self.trajectory.value(dt))
+            output.SetFromVector(self.trajectory.value(self.traj_idx))
+            self.traj_idx += 1*self.sample_speed
         else:
             output.set_value(self.trajectory.GetPose(dt))
 
@@ -130,16 +134,26 @@ class TrajectoryPublisher(LeafSystem):
 
         # Optimize a joint space trajectory
         if self.joint_space:
-            trajectory = CreateTrajectoryOptimized(
-                X_WG, X_goal, self._plant, self._plant_context, tol=self.tol
+            # This optimization is horrible, RRT never fails me, fuckery to make it work
+
+            # trajectory = None
+            # while trajectory is None:
+            #     trajectory = CreateTrajectoryOptimized(
+            #         X_WG, X_goal, self._plant, self._plant_context, tol=self.tol
+            #     )
+            # if trajectory is not None:
+            #     print(f"{self._iiwa_name} trajectory update")
+            #     self.trajectory = trajectory
+            #     return True
+            # else:
+            #     print(f"{self._iiwa_name} failed to update trajectory")
+            #     return False
+
+            self.trajectory = CreateTrajectoryRRT(
+                X_WG, X_goal, self._plant, self._plant_context, max_iter=1000
             )
-            if trajectory is not None:
-                print(f"{self._iiwa_name} trajectory update")
-                self.trajectory = trajectory
-                return True
-            else:
-                print(f"{self._iiwa_name} failed to update trajectory")
-                return False
+            print(f"{self._iiwa_name} trajectory update")
+            return True
 
         # Create a linear pose trajectory
         else:
