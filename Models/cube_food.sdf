@@ -4,7 +4,7 @@
     <link name='cube_food'>
       <inertial>
         <pose>-0.024999999999999956 -0.02499999999999999 0.024999999999999998 0 0 0</pose>
-        <mass>1.2202051857332782</mass>
+        <mass>0.2202051857332782</mass>
         <inertia>
           <ixx>5.157814992562178e-05</ixx>
           <ixy>-3.968847339750296e-20</ixy>
@@ -36,8 +36,8 @@
              or comment out the <drake:rigid_hydroelastic> element. -->
         <drake:proximity_properties>
           <drake:hunt_crossley_dissipation>5</drake:hunt_crossley_dissipation>
-          <drake:mu_dynamic>1.5</drake:mu_dynamic>
-          <drake:mu_static>1.5</drake:mu_static>
+          <drake:mu_dynamic>5</drake:mu_dynamic>
+          <drake:mu_static>5</drake:mu_static>
           <drake:compliant_hydroelastic/>
           <drake:hydroelastic_modulus>5.0e6</drake:hydroelastic_modulus>
         </drake:proximity_properties>
