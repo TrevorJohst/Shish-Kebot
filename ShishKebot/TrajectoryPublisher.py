@@ -15,6 +15,7 @@ from pydrake.all import (
     PiecewisePose
 )
 
+import ShishKebot.Seed
 from ShishKebot.Planning import CreateTrajectoryOptimized, CreateTrajectoryRRT, SolveIK
 
 
@@ -109,8 +110,11 @@ class TrajectoryPublisher(LeafSystem):
 
         # Sample the trajectory appropriately
         if self.joint_space:
-            output.SetFromVector(self.trajectory.value(self.traj_idx))
-            self.traj_idx += 1*self.sample_speed
+            output.SetFromVector(self.trajectory.value(dt))
+
+            # if self._iiwa_name == "iiwa1":
+                # print(f"PUBLISHING: {self.trajectory.value(dt).T}")
+            # self.traj_idx += 1*self.sample_speed
         else:
             output.set_value(self.trajectory.GetPose(dt))
 
@@ -134,36 +138,39 @@ class TrajectoryPublisher(LeafSystem):
 
         # Optimize a joint space trajectory
         if self.joint_space:
-            # This optimization is horrible, RRT never fails me, fuckery to make it work
+            print(f"{self._iiwa_name} joint-space trajectory planning")
 
-            # trajectory = None
-            # while trajectory is None:
-            #     trajectory = CreateTrajectoryOptimized(
-            #         X_WG, X_goal, self._plant, self._plant_context, tol=self.tol
-            #     )
-            # if trajectory is not None:
-            #     print(f"{self._iiwa_name} trajectory update")
-            #     self.trajectory = trajectory
-            #     return True
-            # else:
-            #     print(f"{self._iiwa_name} failed to update trajectory")
-            #     return False
-
-            self.trajectory = CreateTrajectoryRRT(
+            # This optimization is horrible, RRT never fails me
+            rrt_trajectory = CreateTrajectoryRRT(
                 X_WG, X_goal, self._plant, self._plant_context, max_iter=1000
             )
-            print(f"{self._iiwa_name} trajectory update")
+
+            trajectory = CreateTrajectoryOptimized(
+                X_WG, X_goal, self._plant, self._plant_context, tol=self.tol, initial=rrt_trajectory
+            )
+
+            if trajectory is None:
+                print(f"{self._iiwa_name} trajectory update failed, using RRT")
+                self.trajectory = rrt_trajectory
+                return True
+
+            print(f"{self._iiwa_name} joint-space trajectory update")
+            self.trajectory = trajectory
             return True
 
         # Create a linear pose trajectory
         else:
+            print(f"{self._iiwa_name} pose-space trajectory planning")
             traj = PiecewisePose()
-            travel_time = (X_goal.translation() - X_WG.translation()) / self.pose_speed
-            self.trajectory = traj.MakeLinear(
-                [0, travel_time], 
-                [X_WG, X_goal]
-            )
-            print(f"{self._iiwa_name} trajectory update")
+            travel_time = np.linalg.norm(X_goal.translation() - X_WG.translation()) / self.pose_speed
+            positions = np.linspace(X_WG.translation(), X_goal.translation(), 20)
+            poses_traj = [RigidTransform(X_WG.rotation(), position) for position in positions]
+            poses = [X_WG for _ in range(5)]
+            poses.extend(poses_traj)
+            times = np.linspace(0, travel_time, 25)
+
+            self.trajectory = traj.MakeLinear(times, poses)
+            print(f"{self._iiwa_name} pose-space trajectory update, times: {self.trajectory.get_segment_times()}")
             return True
 
     def _X_goal(self, context: Context):

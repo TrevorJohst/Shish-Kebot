@@ -14,6 +14,8 @@ from pydrake.all import (
     RigidTransform
 )
 
+import ShishKebot.Seed
+
 
 class CartesianStiffnessController(LeafSystem):
     """

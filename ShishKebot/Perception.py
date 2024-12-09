@@ -33,6 +33,8 @@ from pydrake.all import (
 )
 from manipulation.systems import ExtractPose
 
+import ShishKebot.Seed
+
 def RemovePlanarSurface(point_cloud: PointCloud, 
                         tolerance: float = 1e-3, 
                         max_iterations: int = 500

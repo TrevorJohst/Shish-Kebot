@@ -32,7 +32,7 @@ from manipulation.exercises.trajectories.rrt_planner.rrt_planning import Problem
 from manipulation.utils import ConfigureParser
 from manipulation.clutter import GenerateAntipodalGraspCandidate
 import os
-from random import random
+
 
 def AntipodalCandidateGrasp(pcd: PointCloud,
                             max_iter: int = 20
@@ -75,7 +75,7 @@ def AntipodalCandidateGrasp(pcd: PointCloud,
     best_X_G = None
     for _ in range(max_iter):
         cost, X_G = GenerateAntipodalGraspCandidate(
-            diagram, context, pcd, rng=np.random.default_rng()
+            diagram, context, pcd, rng=np.random.default_rng(seed=np.random.randint(30, 40))
         )
 
         if np.isfinite(cost) and cost < min_cost:
@@ -278,7 +278,7 @@ def CreateTrajectoryRRT(X_WStart: RigidTransform,
                         plant_context: Context,
                         max_iter: int = 100,
                         prob_sample_q_goal: float = 0.05
-                        ) -> PiecewisePolynomial:
+                        ) -> np.ndarray:
     """
     Creates a trajectory between two end effector poses using joint space RRT
     Args:
@@ -289,7 +289,7 @@ def CreateTrajectoryRRT(X_WStart: RigidTransform,
         max_iter (int): Maximum number of iterations to run RRT for
         prob_sample_q_goal (float): Probability of sampling the goal
     Returns:
-        q_traj (BsplineTrajectory): The trajectory object generated
+        q_traj (np.ndarray): The trajectory object generated (Nx7)
     """
     class RRT_tools:
         class RRT:
@@ -456,7 +456,7 @@ def CreateTrajectoryRRT(X_WStart: RigidTransform,
         q_sample = rrt_tools.sample_node_in_configuration_space()
 
         # random number ← random()
-        rand = random()
+        rand = np.random.random()
 
         # if random_number < prob_sample_goal:
         if rand < prob_sample_q_goal:
@@ -483,18 +483,17 @@ def CreateTrajectoryRRT(X_WStart: RigidTransform,
             # path ← backup the path recursively
             path = rrt_tools.backup_path_from_node(last_node)
             break
-        
+        BsplineTrajectory
     path = np.array(path)
-    times = np.arange(0, path.shape[0], 1)
-    return PiecewisePolynomial.CubicShapePreserving(times, path[:, 0:7].T)
+    return path[:, 0:7].T
 
 def CreateTrajectoryOptimized(X_WStart: RigidTransform,
                               X_WGoal: RigidTransform,
                               plant: MultibodyPlant,
                               plant_context: Context,
                               max_time: float = 4.0,
-                              tol: float = 0.07,
-                              max_iter: int = 100
+                              tol: float = 0.01,
+                              initial: np.ndarray = None
                               ) -> BsplineTrajectory:
     """
     Creates a trajectory between two end effector poses using trajectory optimization.
@@ -505,6 +504,7 @@ def CreateTrajectoryOptimized(X_WStart: RigidTransform,
         plant_context (Context): Context of the plant from root, used for collision avoidance
         max_time (float): Maximum time to accept for a trajectory
         tol (float): Tolerance for aligning with start and end pose
+        initial (np.ndarray): Initial estimate for the trajectory
     Returns:
         q_traj (BsplineTrajectory): The trajectory object generated
     """
@@ -513,68 +513,84 @@ def CreateTrajectoryOptimized(X_WStart: RigidTransform,
     q0 = plant.GetPositions(plant_context)
     gripper_frame = plant.GetFrameByName("body")
 
-    for _ in range(max_iter):
-        trajopt = KinematicTrajectoryOptimization(plant.num_positions(), 10)
-        prog = trajopt.get_mutable_prog()
-
-        # Initial guess (solved without orientation constraint on end)
+    if initial is None:
         path_guess = CreateTrajectoryOptimizedRelaxed(X_WStart, X_WGoal, plant, plant_context, max_time, tol=0.05)
         if path_guess is None: return None
-        trajopt.SetInitialGuess(path_guess)
 
-        # Default constraints
-        trajopt.AddDurationCost(2.0)
-        # trajopt.AddPathLengthCost(2.0)
-        trajopt.AddPositionBounds(plant.GetPositionLowerLimits(), plant.GetPositionUpperLimits())
-        trajopt.AddVelocityBounds(plant.GetVelocityLowerLimits(), plant.GetVelocityUpperLimits())
-        trajopt.AddDurationConstraint(0, max_time)
+    # Determine the shape of the initial trajectory guess
+    num_initial_points = initial.shape[1]
 
-        # Start constraint
-        start_constraint = PositionConstraint(
-            plant,
-            plant.world_frame(),
-            X_WStart.translation() - pos_tols,
-            X_WStart.translation() + pos_tols,
-            gripper_frame,
-            [0, 0.1, 0],
-            plant_context,
-        )
-        trajopt.AddPathPositionConstraint(start_constraint, 0)
-        prog.AddQuadraticErrorCost(np.eye(num_q), q0, trajopt.control_points()[:, 0])
+    # Set the number of control points
+    if num_initial_points < 14:
+        num_control_points = num_initial_points
+        modified_initial = initial  # Use the original initial guess
+    else:
+        num_control_points = 14
+        # Select 14 columns evenly spaced from the initial guess
+        indices = np.linspace(0, num_initial_points - 1, num_control_points, dtype=int)
+        modified_initial = initial[:, indices]
 
-        # Goal constraint
-        q_goal = SolveIK(X_WGoal, plant, pos_tol=tol, rot_tol=tol, max_iter=1000, initial=q0)
-        if q_goal is None: break
-        trajopt.AddPathPositionConstraint(lb=q_goal, ub=q_goal, s=1)
-        # goal_constraint = PositionConstraint(
-        #     plant,
-        #     plant.world_frame(),
-        #     X_WGoal.translation(),
-        #     X_WGoal.translation(),
-        #     gripper_frame,
-        #     [0, 0.1, 0],
-        #     plant_context,
-        # )
-        # trajopt.AddPathPositionConstraint(goal_constraint, 1)
-        # goal_orientation_constraint = OrientationConstraint(
-        #     plant,
-        #     plant.world_frame(),
-        #     X_WGoal.rotation(),
-        #     gripper_frame,
-        #     RotationMatrix(),
-        #     tol,
-        #     plant_context
-        # )
-        # trajopt.AddPathPositionConstraint(goal_orientation_constraint, 1)
-        prog.AddQuadraticErrorCost(np.eye(num_q), q0, trajopt.control_points()[:, -1])
+    # Set up trajectory optimization with the determined number of control points
+    trajopt = KinematicTrajectoryOptimization(plant.num_positions(), num_control_points=num_control_points)
+    prog = trajopt.get_mutable_prog()
 
-        # Start and end with zero velocity
-        trajopt.AddPathVelocityConstraint(np.zeros((num_q, 1)), np.zeros((num_q, 1)), 0)
-        trajopt.AddPathVelocityConstraint(np.zeros((num_q, 1)), np.zeros((num_q, 1)), 1)
+    # Create the initial guess for the B-spline trajectory
+    path_guess = BsplineTrajectory(trajopt.basis(), modified_initial)
+    trajopt.SetInitialGuess(path_guess)
 
-        result = Solve(prog)
-        if result.is_success():
-            return trajopt.ReconstructTrajectory(result)
+    # Default constraints
+    trajopt.AddDurationCost(1.0)
+    trajopt.AddPathLengthCost(1.0)
+    trajopt.AddPositionBounds(plant.GetPositionLowerLimits(), plant.GetPositionUpperLimits())
+    trajopt.AddVelocityBounds(plant.GetVelocityLowerLimits(), plant.GetVelocityUpperLimits())
+    trajopt.AddDurationConstraint(0, max_time)
+
+    # Start constraint
+    start_constraint = PositionConstraint(
+        plant,
+        plant.world_frame(),
+        X_WStart.translation() - pos_tols,
+        X_WStart.translation() + pos_tols,
+        gripper_frame,
+        [0, 0.1, 0],
+        plant_context,
+    )
+    trajopt.AddPathPositionConstraint(start_constraint, 0)
+    prog.AddQuadraticErrorCost(np.eye(num_q), q0, trajopt.control_points()[:, 0])
+
+    # Goal constraint
+    # q_goal = SolveIK(X_WGoal, plant, pos_tol=tol, rot_tol=tol, max_iter=1000, initial=q0)
+    # if q_goal is None: return None
+    # trajopt.AddPathPositionConstraint(lb=q_goal, ub=q_goal, s=1)
+    goal_constraint = PositionConstraint(
+        plant,
+        plant.world_frame(),
+        X_WGoal.translation(),
+        X_WGoal.translation(),
+        gripper_frame,
+        [0, 0, 0],
+        plant_context,
+    )
+    trajopt.AddPathPositionConstraint(goal_constraint, 1)
+    goal_orientation_constraint = OrientationConstraint(
+        plant,
+        plant.world_frame(),
+        X_WGoal.rotation(),
+        gripper_frame,
+        RotationMatrix(),
+        tol,
+        plant_context
+    )
+    trajopt.AddPathPositionConstraint(goal_orientation_constraint, 1)
+    prog.AddQuadraticErrorCost(np.eye(num_q), q0, trajopt.control_points()[:, -1])
+
+    # Start and end with zero velocity
+    trajopt.AddPathVelocityConstraint(np.zeros((num_q, 1)), np.zeros((num_q, 1)), 0)
+    trajopt.AddPathVelocityConstraint(np.zeros((num_q, 1)), np.zeros((num_q, 1)), 1)
+
+    result = Solve(prog)
+    if result.is_success():
+        return trajopt.ReconstructTrajectory(result)
     
     return None
 
