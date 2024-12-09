@@ -117,7 +117,7 @@ class TrajectoryPublisher(LeafSystem):
         self._debug_count += 1
         if self._debug_count > self._debug_rate:
             self._debug_count = 0
-        
+
     def _GenerateTrajectory(self, context: Context) -> bool:
         """
         Calculates the trajectory between the current position and the goal
@@ -157,8 +157,10 @@ class TrajectoryPublisher(LeafSystem):
 
         # Create a linear pose trajectory
         else:
+            displacement = X_goal.translation() - X_WG.translation()
+            distance = np.sqrt(displacement.dot(displacement))
             traj = PiecewisePose()
-            travel_time = (X_goal.translation() - X_WG.translation()) / self.pose_speed
+            travel_time = (distance) / self.pose_speed
             self.trajectory = traj.MakeLinear(
                 [0, travel_time], 
                 [X_WG, X_goal]
@@ -168,7 +170,7 @@ class TrajectoryPublisher(LeafSystem):
 
     def _X_goal(self, context: Context):
         return context.get_abstract_state(int(self._X_goal_index)).get_value()
-    
+
     def _set_X_goal(self, context: Context, X: RigidTransform):
         context.get_mutable_abstract_state(int(self._X_goal_index)).set_value(X)
 

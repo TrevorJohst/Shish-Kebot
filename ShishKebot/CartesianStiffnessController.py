@@ -11,7 +11,7 @@ from pydrake.all import (
     RollPitchYaw,
     RotationMatrix,
     AbstractValue,
-    RigidTransform
+    RigidTransform,
 )
 
 
@@ -97,8 +97,12 @@ class CartesianStiffnessController(LeafSystem):
 
         # External inputs
         qdot = self._qdot_in.Eval(context).reshape(-1, 1)  # 7x1
-        X_d = self._x_d_in.Eval(context)                   # RigidTransform
-        x_d = np.vstack((RollPitchYaw(X_d.rotation()).vector(), X_d.translation())).reshape(-1, 1) # 6x1
+        X_d = self._x_d_in.Eval(context)  # RigidTransform
+        x_d = np.vstack(
+            (RollPitchYaw(X_d.rotation()).vector(), X_d.translation())
+        ).reshape(
+            -1, 1
+        )  # 6x1
         xdot_d = np.zeros((6, 1))  # 6x1 CURRENTLY DISABLED
 
         # Jacobian calculation for current configuration
@@ -114,7 +118,9 @@ class CartesianStiffnessController(LeafSystem):
 
         # Measured pose in cartesian space
         X_G = self._plant.CalcRelativeTransform(self._plant_context, self._W, self._G)
-        x = np.vstack((RollPitchYaw(X_G.rotation()).vector(), X_G.translation())).reshape(-1, 1)
+        x = np.vstack(
+            (RollPitchYaw(X_G.rotation()).vector(), X_G.translation())
+        ).reshape(-1, 1)
         # 6x1         3x1                                    3x1
 
         # Measured SPATIAL velocity in cartesian space
@@ -126,16 +132,22 @@ class CartesianStiffnessController(LeafSystem):
         ######################
 
         # Joint space Coriolis and centrifugal biases (39)
-        btilde_r = self._plant.CalcBiasTerm(self._plant_context)[self._joint_indices].reshape(-1, 1)
+        btilde_r = self._plant.CalcBiasTerm(self._plant_context)[
+            self._joint_indices
+        ].reshape(-1, 1)
         # 7x1                  7x1
 
         # Joint space "mass matrix" (calculated directly internally?)
-        A = self._plant.CalcMassMatrix(self._plant_context)[np.ix_(self._joint_indices, self._joint_indices)]
+        A = self._plant.CalcMassMatrix(self._plant_context)[
+            np.ix_(self._joint_indices, self._joint_indices)
+        ]
         # 7x7           7x7
 
         # Joint space forces due to gravity
         # NOTE: This may have to be disabled due to issues with modeling torque-only control
-        g = A @ self._plant.CalcGravityGeneralizedForces(self._plant_context)[self._joint_indices].reshape(-1, 1)
+        g = A @ self._plant.CalcGravityGeneralizedForces(self._plant_context)[
+            self._joint_indices
+        ].reshape(-1, 1)
         # 7x1 7x7           7x1
 
         # Pseudo-"mass matrix" for cartesian space (51)
@@ -159,7 +171,12 @@ class CartesianStiffnessController(LeafSystem):
         # 7x1 = 7x6   6x6         6x1       6x1     7x1       7x1        7x1
 
         # Why do I need to manually clip the effort limits?
-        output.SetFromVector(np.clip(Gamma, -40, 40))
+
+        limits = np.array([[176, 176, 110, 110, 110, 40, 40]]).T
+
+        output.SetFromVector(np.clip(Gamma, -limits, limits))
+
+        # print(np.clip(Gamma, -limits, limits))
 
         self._debug_count += 1
         if self._debug_count > self._debug_rate:

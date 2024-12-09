@@ -34,7 +34,7 @@
         </geometry>
         <drake:proximity_properties>
           <drake:rigid_hydroelastic/>
-          <drake:hydroelastic_modulus>1.0e6</drake:hydroelastic_modulus>
+          <!-- <drake:hydroelastic_modulus>1.0e6</drake:hydroelastic_modulus> -->
         </drake:proximity_properties>
       </collision>
     </link>
